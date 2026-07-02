@@ -1,6 +1,3 @@
-<p align="center">
-  <img src="assets/logo.png" alt="ArK logo" width="180">
-</p>
 
 <h1 align="center">ArK</h1>
 
