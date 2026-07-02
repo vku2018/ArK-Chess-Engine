@@ -1,4 +1,4 @@
-use ark_core::{perft, Color, MoveFlag, MoveList, Position};
+use ark_core::{perft, Color, FenError, MoveFlag, MoveList, Position};
 
 const START: &str = Position::START_FEN;
 const KIWIPETE: &str = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
@@ -20,6 +20,93 @@ fn startpos_fen_round_trips() -> Result<(), ark_core::FenError> {
             .count_ones(),
         16
     );
+    Ok(())
+}
+
+#[test]
+fn fen_rejects_structural_rule_violations() {
+    let cases = [
+        (
+            "zero rank digit",
+            "4k3/8/8/8/8/8/8/4K0N2 w - - 0 1",
+            FenError::BadBoard,
+        ),
+        (
+            "adjacent rank digits",
+            "4k3/8/8/8/8/8/8/4K12 w - - 0 1",
+            FenError::BadBoard,
+        ),
+        (
+            "multiple white kings",
+            "4k3/8/8/8/8/8/4K3/4K3 w - - 0 1",
+            FenError::TooManyKings,
+        ),
+        (
+            "white pawn on eighth rank",
+            "P3k3/8/8/8/8/8/8/4K3 w - - 0 1",
+            FenError::PawnOnBackRank,
+        ),
+        (
+            "black pawn on first rank",
+            "4k3/8/8/8/8/8/8/p3K3 w - - 0 1",
+            FenError::PawnOnBackRank,
+        ),
+        (
+            "bad en passant rank",
+            "4k3/8/8/8/8/8/8/4K3 w - e4 0 1",
+            FenError::BadEnPassant,
+        ),
+        (
+            "occupied en passant target",
+            "4k3/8/8/8/4P3/4N3/8/4K3 b - e3 0 1",
+            FenError::BadEnPassant,
+        ),
+        (
+            "missing just-moved en passant pawn",
+            "4k3/8/8/8/8/8/8/4K3 b - e3 0 1",
+            FenError::BadEnPassant,
+        ),
+        (
+            "occupied en passant source",
+            "4k3/8/8/8/4P3/8/4N3/4K3 b - e3 0 1",
+            FenError::BadEnPassant,
+        ),
+        (
+            "castling right with missing rook",
+            "4k3/8/8/8/8/8/8/4K3 w K - 0 1",
+            FenError::BadCastling,
+        ),
+        (
+            "castling right with wrong rook color",
+            "4k3/8/8/8/8/8/8/4K2r w K - 0 1",
+            FenError::BadCastling,
+        ),
+        (
+            "castling right with king off start square",
+            "4k3/8/8/8/8/8/8/R2K3R w K - 0 1",
+            FenError::BadCastling,
+        ),
+        (
+            "adjacent kings",
+            "8/8/8/8/8/8/4k3/4K3 w - - 0 1",
+            FenError::KingsTouch,
+        ),
+    ];
+
+    for (name, fen, expected) in cases {
+        assert_eq!(
+            Position::from_fen(fen),
+            Err(expected),
+            "{name} returned the wrong FEN error"
+        );
+    }
+}
+
+#[test]
+fn fen_accepts_valid_en_passant_target_without_capturer() -> Result<(), ark_core::FenError> {
+    let fen = "4k3/8/8/8/4P3/8/8/4K3 b - e3 0 1";
+    let position = Position::from_fen(fen)?;
+    assert_eq!(position.to_fen(), fen);
     Ok(())
 }
 

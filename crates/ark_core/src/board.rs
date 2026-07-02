@@ -111,6 +111,9 @@ pub enum FenError {
     BadEnPassant,
     BadClock,
     MissingKing,
+    TooManyKings,
+    PawnOnBackRank,
+    KingsTouch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -144,6 +147,12 @@ const CASTLE_WHITE_KING: u8 = 0b0001;
 const CASTLE_WHITE_QUEEN: u8 = 0b0010;
 const CASTLE_BLACK_KING: u8 = 0b0100;
 const CASTLE_BLACK_QUEEN: u8 = 0b1000;
+const WHITE_KING_START: Square = Square(4);
+const WHITE_QUEEN_ROOK_START: Square = Square(0);
+const WHITE_KING_ROOK_START: Square = Square(7);
+const BLACK_KING_START: Square = Square(60);
+const BLACK_QUEEN_ROOK_START: Square = Square(56);
+const BLACK_KING_ROOK_START: Square = Square(63);
 const MOVE_LIST_CAPACITY: usize = 96;
 
 impl Position {
@@ -186,11 +195,7 @@ impl Position {
         };
         position.halfmove_clock = fields[4].parse().map_err(|_err| FenError::BadClock)?;
         position.fullmove_number = fields[5].parse().map_err(|_err| FenError::BadClock)?;
-        if position.king_square(Color::White).is_none()
-            || position.king_square(Color::Black).is_none()
-        {
-            return Err(FenError::MissingKing);
-        }
+        validate_fen_position(&position)?;
         Ok(position)
     }
 
@@ -798,6 +803,115 @@ impl Position {
     }
 }
 
+fn validate_fen_position(position: &Position) -> Result<(), FenError> {
+    validate_king_count(position, Color::White)?;
+    validate_king_count(position, Color::Black)?;
+    validate_kings_do_not_touch(position)?;
+    validate_castling_rights(position)?;
+    validate_en_passant(position)?;
+    Ok(())
+}
+
+fn validate_king_count(position: &Position, color: Color) -> Result<(), FenError> {
+    match position.bitboards[piece_index(Piece {
+        color,
+        kind: PieceKind::King,
+    })]
+    .count_ones()
+    {
+        0 => Err(FenError::MissingKing),
+        1 => Ok(()),
+        _ => Err(FenError::TooManyKings),
+    }
+}
+
+fn validate_kings_do_not_touch(position: &Position) -> Result<(), FenError> {
+    let white = position
+        .king_square(Color::White)
+        .ok_or(FenError::MissingKing)?;
+    let black = position
+        .king_square(Color::Black)
+        .ok_or(FenError::MissingKing)?;
+    let df = (white.file() - black.file()).abs();
+    let dr = (white.rank() - black.rank()).abs();
+    if df <= 1 && dr <= 1 {
+        Err(FenError::KingsTouch)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_castling_rights(position: &Position) -> Result<(), FenError> {
+    for (right, color, king, rook) in [
+        (
+            CASTLE_WHITE_KING,
+            Color::White,
+            WHITE_KING_START,
+            WHITE_KING_ROOK_START,
+        ),
+        (
+            CASTLE_WHITE_QUEEN,
+            Color::White,
+            WHITE_KING_START,
+            WHITE_QUEEN_ROOK_START,
+        ),
+        (
+            CASTLE_BLACK_KING,
+            Color::Black,
+            BLACK_KING_START,
+            BLACK_KING_ROOK_START,
+        ),
+        (
+            CASTLE_BLACK_QUEEN,
+            Color::Black,
+            BLACK_KING_START,
+            BLACK_QUEEN_ROOK_START,
+        ),
+    ] {
+        if position.castling & right != 0
+            && (!is_piece(position, king, color, PieceKind::King)
+                || !is_piece(position, rook, color, PieceKind::Rook))
+        {
+            return Err(FenError::BadCastling);
+        }
+    }
+    Ok(())
+}
+
+fn validate_en_passant(position: &Position) -> Result<(), FenError> {
+    let Some(target) = position.en_passant else {
+        return Ok(());
+    };
+    let expected_rank = match position.side_to_move {
+        Color::White => 5,
+        Color::Black => 2,
+    };
+    if target.rank() != expected_rank || position.piece_at(target).is_some() {
+        return Err(FenError::BadEnPassant);
+    }
+    let just_moved = position.side_to_move.opposite();
+    let Some(pawn) = Square::from_coords(target.file(), target.rank() + just_moved.pawn_dir())
+    else {
+        return Err(FenError::BadEnPassant);
+    };
+    let Some(source) = Square::from_coords(target.file(), target.rank() - just_moved.pawn_dir())
+    else {
+        return Err(FenError::BadEnPassant);
+    };
+    if is_piece(position, pawn, just_moved, PieceKind::Pawn) && position.piece_at(source).is_none()
+    {
+        Ok(())
+    } else {
+        Err(FenError::BadEnPassant)
+    }
+}
+
+fn is_piece(position: &Position, square: Square, color: Color, kind: PieceKind) -> bool {
+    position
+        .piece_at(square)
+        .is_some_and(|piece| piece.color == color && piece.kind == kind)
+}
+
 fn castle_rook_move(mv: Move) -> Option<(Square, Square)> {
     if !matches!(mv.flag(), MoveFlag::KingCastle | MoveFlag::QueenCastle) {
         return None;
@@ -855,12 +969,25 @@ fn parse_board(text: &str, position: &mut Position) -> Result<(), FenError> {
     for (rank_index, rank_text) in ranks.iter().enumerate() {
         let rank = 7 - rank_index as i8;
         let mut file = 0_i8;
+        let mut previous_digit = false;
         for ch in rank_text.chars() {
             if ch.is_ascii_digit() {
-                file += ch.to_digit(10).ok_or(FenError::BadBoard)? as i8;
+                if previous_digit {
+                    return Err(FenError::BadBoard);
+                }
+                let digit = ch.to_digit(10).ok_or(FenError::BadBoard)? as i8;
+                if digit == 0 || file + digit > 8 {
+                    return Err(FenError::BadBoard);
+                }
+                file += digit;
+                previous_digit = true;
                 continue;
             }
+            previous_digit = false;
             let piece = char_to_piece(ch).ok_or(FenError::BadBoard)?;
+            if piece.kind == PieceKind::Pawn && (rank == 0 || rank == 7) {
+                return Err(FenError::PawnOnBackRank);
+            }
             let Some(square) = Square::from_coords(file, rank) else {
                 return Err(FenError::BadBoard);
             };

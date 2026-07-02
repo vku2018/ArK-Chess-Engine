@@ -153,3 +153,20 @@ fn perft_json_reports_correct_nodes_pass_and_fail() -> Result<(), Box<dyn std::e
     );
     Ok(())
 }
+
+#[test]
+fn perft_bad_fen_exits_non_zero_with_bad_fen() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_ark"))
+        .args([
+            "perft",
+            "--fen",
+            "4k3/8/8/8/8/8/8/4K0N2 w - - 0 1",
+            "--depth",
+            "1",
+        ])
+        .output()?;
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains("bad FEN"), "{stderr}");
+    Ok(())
+}
