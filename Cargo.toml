@@ -11,7 +11,7 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/bitlical/Ark"
+repository = "https://github.com/bitlical/ArK-Chess-Engine"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
