@@ -1,0 +1,12 @@
+[selfplay]
+games = 16
+search_depth = 1
+tactical_extension_depth = 2
+max_plies = 256
+actors = 1
+seed = 1
+chunk_size = 4096
+chunked = true
+move_order = "seed"
+leaf_eval = "terminal"
+out = "runs/v4/selfplay-baseline"

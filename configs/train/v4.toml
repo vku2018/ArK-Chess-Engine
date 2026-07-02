@@ -1,0 +1,5 @@
+[train]
+replay = "runs/v4/selfplay-baseline"
+out = "models/ark-v4-forge-smoke.arkmodel"
+steps = 1
+learning_rate = 0.05

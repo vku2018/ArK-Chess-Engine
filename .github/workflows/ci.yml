@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Bootstrap Rust
+        shell: pwsh
+        run: .\scripts\bootstrap-rust.ps1
+
+      - name: Test
+        shell: pwsh
+        run: .\scripts\cargo-local.ps1 test
+
+      - name: Clippy
+        shell: pwsh
+        run: .\scripts\cargo-local.ps1 clippy --all-targets '--' '-D' 'warnings'
+
+      - name: Active tree guard
+        shell: pwsh
+        run: .\tests\active_tree_guard.ps1
+
+      - name: Performance contract guard
+        shell: pwsh
+        run: .\tests\perf_contract_guard.ps1
+
+      - name: Dependency guard
+        shell: pwsh
+        run: .\tests\dependency_guard.ps1
+
+      - name: Codex review gate test
+        shell: pwsh
+        run: .\tests\codex_review_gate.ps1

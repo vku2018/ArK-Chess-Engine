@@ -1,0 +1,26 @@
+﻿name: Feature request
+description: Propose a focused engine, training, or tooling improvement.
+title: "feature: "
+labels: ["type: feature"]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: What measurable behavior should improve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the change and the affected module.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: Tests, evals, or benchmark gates that should prove the change.
+    validations:
+      required: true

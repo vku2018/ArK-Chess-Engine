@@ -1,0 +1,33 @@
+﻿name: Performance task
+description: Track a measurable search, movegen, self-play, or training speed improvement.
+title: "perf: "
+labels: ["type: performance"]
+body:
+  - type: input
+    id: metric
+    attributes:
+      label: Metric
+      description: The metric this work should move.
+      placeholder: "nodes_per_second, games_per_second, legal_moves_generated_per_ply"
+    validations:
+      required: true
+  - type: textarea
+    id: baseline
+    attributes:
+      label: Baseline
+      description: Current measurement, command, hardware, and commit SHA.
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Exact tests, benchmarks, and target thresholds.
+    validations:
+      required: true

@@ -1,0 +1,22 @@
+[workspace]
+members = [
+  "crates/ark_core",
+  "crates/ark_cli",
+  "crates/ark_model",
+  "crates/ark_selfplay",
+  "crates/ark_replay",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/bitlical/Ark"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "deny"
+unwrap_used = "deny"
+expect_used = "deny"

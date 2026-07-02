@@ -1,0 +1,39 @@
+name: Codex Review Gate
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  pull_request_review:
+    types:
+      - submitted
+      - edited
+      - dismissed
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  codex-review-required:
+    name: Codex Review Required
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout trusted base gate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Require Codex review for current head
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          ./.github/scripts/require-codex-review.ps1 `
+            -Repository '${{ github.repository }}' `
+            -PullRequestNumber '${{ github.event.pull_request.number }}' `
+            -HeadSha '${{ github.event.pull_request.head.sha }}'
