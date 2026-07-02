@@ -1,15 +1,17 @@
 mod bench_contract;
+mod json_report;
+mod uci;
 
 use std::collections::BTreeMap;
 use std::env;
-use std::io::{self, BufRead, Write};
+use std::io;
 use std::path::Path;
 use std::thread;
 use std::time::Instant;
 
 use ark_core::{
-    perft, search, search_with_context, GameOutcome, GameState, Move, Position,
-    SearchLeafEvaluator, SearchMoveOrderer, SearchRequest,
+    perft, search, search_with_context, search_with_context_and_root_moves, GameOutcome, GameState,
+    Move, MoveList, Position, SearchLeafEvaluator, SearchMoveOrderer, SearchRequest,
 };
 use ark_model::{
     validate_replay, write_replay, ForgeModel, GameRecord, PolicyMoveWorkspace,
@@ -20,6 +22,7 @@ use ark_selfplay::{
     run_selfplay as run_streaming_selfplay, LeafEvalMode, SelfPlayConfig as StreamingSelfPlayConfig,
 };
 use bench_contract::{MetricValue, Target};
+use serde_json::json;
 
 const STARTPOS_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 const KIWIPETE_FEN: &str = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
@@ -62,7 +65,7 @@ fn run() -> Result<(), String> {
                     nodes,
                     elapsed_ms,
                     correct_nodes,
-                );
+                )?;
             } else {
                 println!("{nodes}");
             }
@@ -105,6 +108,11 @@ fn run() -> Result<(), String> {
                 .map(|text| parse_u32(&text, "--threads"))
                 .transpose()?
                 .unwrap_or(1);
+            if threads > 1 {
+                return Err(format!(
+                    "search --threads > 1 is not supported yet; got {threads}. Use --threads 1. The 32-thread search benchmark is documented as unsupported until parallel search lands."
+                ));
+            }
             let model = load_search_model(&move_order, leaf_eval, checkpoint.as_deref())?;
             let checkpoint_loaded = model.is_some();
             let mut model_orderer = match (move_order.as_str(), model.as_ref()) {
@@ -151,13 +159,13 @@ fn run() -> Result<(), String> {
                         leaf_eval,
                         checkpoint_loaded,
                     },
-                );
+                )?;
             } else {
                 println!("{best}");
             }
         }
         Some("terminal-leaf-suite") => run_terminal_leaf_suite(&args[1..])?,
-        Some("uci") => run_uci()?,
+        Some("uci") => uci::run_uci()?,
         Some("selfplay") => run_selfplay(&args[1..])?,
         Some("train") => run_train(&args[1..])?,
         Some("eval") => run_eval(&args[1..])?,
@@ -277,31 +285,33 @@ fn print_perft_json(
     nodes: u64,
     elapsed_ms: u128,
     correct_nodes_override: Option<u64>,
-) {
+) -> Result<(), String> {
     let (benchmark_id, target_profile, targets) = perft_targets(fen, depth, correct_nodes_override);
     let mut metrics = BTreeMap::new();
     metrics.insert("nodes", Some(MetricValue::U64(nodes)));
+    metrics.insert("depth", Some(MetricValue::U64(u64::from(depth))));
     metrics.insert("elapsed_ms", Some(MetricValue::U128(elapsed_ms)));
+    metrics.insert("threads", Some(MetricValue::U64(u64::from(threads))));
     metrics.insert("illegal_moves", Some(MetricValue::U64(0)));
     metrics.insert("python_hot_path_ms", Some(MetricValue::U64(0)));
     let evaluation = bench_contract::evaluate(&targets, &metrics);
-    println!(
-        "{{\"schema_version\":\"{}\",\"benchmark_id\":\"{}\",\"status\":\"{}\",\"git_sha\":\"{}\",\"target_profile\":\"{}\",\"command\":\"{}\",\"seed\":null,\"metrics\":{{\"depth\":{},\"nodes\":{},\"elapsed_ms\":{},\"threads\":{},\"illegal_moves\":0,\"python_hot_path_ms\":0}},\"targets\":{},\"target_results\":{},\"failures\":{},\"confidence\":{},\"artifacts\":{{\"committed_artifacts\":0,\"game_output_path\":null}}}}",
-        bench_contract::SCHEMA_VERSION,
-        benchmark_id,
-        evaluation.status,
-        bench_contract::escape_json(&bench_contract::git_sha()),
-        target_profile,
-        bench_contract::escape_json(&bench_contract::canonical_command(args)),
-        depth,
-        nodes,
-        elapsed_ms,
-        threads,
-        evaluation.targets_json,
-        evaluation.target_results_json,
-        evaluation.failures_json,
-        bench_contract::confidence_json()
-    );
+    let mut report = json!({
+        "schema_version": bench_contract::SCHEMA_VERSION,
+        "benchmark_id": benchmark_id,
+        "status": evaluation.status,
+        "git_sha": bench_contract::git_sha(),
+        "target_profile": target_profile,
+        "command": bench_contract::canonical_command(args),
+        "seed": null,
+        "metrics": json_report::metric_map(metrics),
+        "targets": {},
+        "target_results": [],
+        "failures": [],
+        "confidence": {},
+        "artifacts": json_report::artifacts(None, None),
+    });
+    json_report::append_evaluation_fields(&mut report, &evaluation);
+    json_report::write_json_line(io::stdout(), &report)
 }
 
 fn perft_targets(
@@ -371,7 +381,7 @@ struct SearchJsonReport<'a> {
     checkpoint_loaded: bool,
 }
 
-fn print_search_json(args: &[String], report: SearchJsonReport<'_>) {
+fn print_search_json(args: &[String], report: SearchJsonReport<'_>) -> Result<(), String> {
     let result = report.result;
     let (benchmark_id, target_profile, targets) =
         search_targets(report.fen, report.depth, report.threads);
@@ -384,6 +394,18 @@ fn print_search_json(args: &[String], report: SearchJsonReport<'_>) {
     metrics.insert(
         "legal_moves_generated",
         Some(MetricValue::U64(result.trace.legal_moves_generated)),
+    );
+    metrics.insert(
+        "root_movegen_calls",
+        Some(MetricValue::U64(result.trace.root_movegen_calls)),
+    );
+    metrics.insert(
+        "node_movegen_calls",
+        Some(MetricValue::U64(result.trace.node_movegen_calls)),
+    );
+    metrics.insert(
+        "total_movegen_calls",
+        Some(MetricValue::U64(result.trace.total_movegen_calls)),
     );
     metrics.insert("leaf_evals", Some(MetricValue::U64(result.evals)));
     metrics.insert(
@@ -425,6 +447,18 @@ fn print_search_json(args: &[String], report: SearchJsonReport<'_>) {
         Some(MetricValue::U64(result.trace.move_orderer_moves)),
     );
     metrics.insert(
+        "tactical_extension_depth",
+        Some(MetricValue::U64(u64::from(
+            result.trace.tactical_extension_depth,
+        ))),
+    );
+    metrics.insert(
+        "tactical_extension_depth_reached",
+        Some(MetricValue::U64(u64::from(
+            result.trace.tactical_extension_depth_reached,
+        ))),
+    );
+    metrics.insert(
         "tactical_extension_nodes",
         Some(MetricValue::U64(result.trace.tactical_extension_nodes)),
     );
@@ -447,56 +481,40 @@ fn print_search_json(args: &[String], report: SearchJsonReport<'_>) {
     metrics.insert("python_hot_path_ms", Some(MetricValue::U64(0)));
     metrics.insert("speedup_vs_single_thread", None);
     let evaluation = bench_contract::evaluate(&targets, &metrics);
-    println!(
-        "{{\"schema_version\":\"{}\",\"benchmark_id\":\"{}\",\"status\":\"{}\",\"git_sha\":\"{}\",\"target_profile\":\"{}\",\"command\":\"{}\",\"seed\":{},\"move_order\":\"{}\",\"leaf_eval\":\"{}\",\"checkpoint_loaded\":{},\"best_move\":\"{}\",\"score\":{},\"metrics\":{{\"nodes\":{},\"nodes_per_second\":{},\"speedup_vs_single_thread\":null,\"legal_moves_generated\":{},\"leaf_evals\":{},\"terminal_leaf_evals\":{},\"neutral_frontier_evals\":{},\"wdl_leaf_evals\":{},\"external_leaf_eval_calls\":{},\"non_terminal_static_eval_calls\":{},\"transposition_table_probes\":{},\"transposition_table_hit_rate\":{},\"cutoffs\":{},\"model_ordered_root_moves\":{},\"model_ordered_moves\":{},\"tactical_extension_depth\":{},\"tactical_extension_depth_reached\":{},\"tactical_extension_nodes\":{},\"tactical_extension_moves\":{},\"depth_completed\":{},\"elapsed_ms\":{},\"threads\":{},\"cpu_utilization_percent\":null,\"rss_mb\":null,\"python_hot_path_ms\":0}},\"targets\":{},\"target_results\":{},\"failures\":{},\"confidence\":{},\"artifacts\":{{\"committed_artifacts\":0,\"game_output_path\":null}},\"trace\":{{\"root_moves\":{},\"requested_depth\":{},\"node_limit\":{},\"movetime_ms\":{},\"terminal_only\":{},\"stopped_by\":\"{}\",\"pv_complete\":{}}}}}",
-        bench_contract::SCHEMA_VERSION,
-        benchmark_id,
-        evaluation.status,
-        bench_contract::escape_json(&bench_contract::git_sha()),
-        target_profile,
-        bench_contract::escape_json(&bench_contract::canonical_command(args)),
-        report.seed,
-        bench_contract::escape_json(report.move_order),
-        leaf_eval_name(report.leaf_eval),
-        report.checkpoint_loaded,
-        bench_contract::escape_json(report.best),
-        report.score,
-        result.nodes,
-        report.nodes_per_second,
-        result.trace.legal_moves_generated,
-        result.evals,
-        result.trace.terminal_leaf_evals,
-        result.trace.neutral_frontier_evals,
-        result.trace.external_leaf_eval_calls,
-        result.trace.external_leaf_eval_calls,
-        result.trace.non_terminal_static_eval_calls,
-        result.trace.transposition_table_probes,
-        hit_rate(
-            result.trace.transposition_table_hits,
-            result.trace.transposition_table_probes
-        ),
-        result.trace.cutoffs,
-        result.trace.move_orderer_root_moves,
-        result.trace.move_orderer_moves,
-        result.trace.tactical_extension_depth,
-        result.trace.tactical_extension_depth_reached,
-        result.trace.tactical_extension_nodes,
-        result.trace.tactical_extension_moves,
-        result.depth_reached,
-        report.elapsed_ms,
-        report.threads,
-        evaluation.targets_json,
-        evaluation.target_results_json,
-        evaluation.failures_json,
-        bench_contract::confidence_json(),
-        result.trace.root_moves,
-        result.trace.requested_depth,
-        json_option_u64(result.trace.node_limit),
-        json_option_u64(result.trace.movetime_ms),
-        result.trace.terminal_only,
-        result.trace.stopped_by,
-        result.trace.pv_complete
-    );
+    let mut report_value = json!({
+        "schema_version": bench_contract::SCHEMA_VERSION,
+        "benchmark_id": benchmark_id,
+        "status": evaluation.status,
+        "git_sha": bench_contract::git_sha(),
+        "target_profile": target_profile,
+        "command": bench_contract::canonical_command(args),
+        "seed": report.seed,
+        "move_order": report.move_order,
+        "leaf_eval": leaf_eval_name(report.leaf_eval),
+        "checkpoint_loaded": report.checkpoint_loaded,
+        "best_move": report.best,
+        "score": report.score,
+        "metrics": json_report::metric_map(metrics),
+        "targets": {},
+        "target_results": [],
+        "failures": [],
+        "confidence": {},
+        "artifacts": json_report::artifacts(None, None),
+        "trace": {
+            "root_moves": result.trace.root_moves,
+            "requested_depth": result.trace.requested_depth,
+            "node_limit": result.trace.node_limit,
+            "movetime_ms": result.trace.movetime_ms,
+            "terminal_only": result.trace.terminal_only,
+            "stopped_by": result.trace.stopped_by.to_string(),
+            "pv_complete": result.trace.pv_complete,
+            "root_movegen_calls": result.trace.root_movegen_calls,
+            "node_movegen_calls": result.trace.node_movegen_calls,
+            "total_movegen_calls": result.trace.total_movegen_calls,
+        },
+    });
+    json_report::append_evaluation_fields(&mut report_value, &evaluation);
+    json_report::write_json_line(io::stdout(), &report_value)
 }
 
 fn search_targets(
@@ -654,93 +672,28 @@ fn run_terminal_leaf_suite(args: &[String]) -> Result<(), String> {
         ];
         let evaluation = bench_contract::evaluate(&targets, &metrics);
         let command_args = command_args("terminal-leaf-suite", args);
-        println!(
-            "{{\"schema_version\":\"{}\",\"benchmark_id\":\"forge-search-terminal-leaf-gate\",\"status\":\"{}\",\"git_sha\":\"{}\",\"target_profile\":\"local_release_smoke\",\"command\":\"{}\",\"seed\":1,\"metrics\":{{\"cases\":{},\"terminal_cases_passed\":{},\"non_terminal_static_eval_calls\":{},\"elapsed_ms\":{},\"python_hot_path_ms\":0}},\"targets\":{},\"target_results\":{},\"failures\":{},\"confidence\":{},\"artifacts\":{{\"committed_artifacts\":0,\"game_output_path\":null}}}}",
-            bench_contract::SCHEMA_VERSION,
-            evaluation.status,
-            bench_contract::escape_json(&bench_contract::git_sha()),
-            bench_contract::escape_json(&bench_contract::canonical_command(&command_args)),
-            cases,
-            passed,
-            result.trace.non_terminal_static_eval_calls,
-            elapsed_ms,
-            evaluation.targets_json,
-            evaluation.target_results_json,
-            evaluation.failures_json,
-            bench_contract::confidence_json()
-        );
+        metrics.insert("cases", Some(MetricValue::U64(u64::from(cases))));
+        let mut report = json!({
+            "schema_version": bench_contract::SCHEMA_VERSION,
+            "benchmark_id": "forge-search-terminal-leaf-gate",
+            "status": evaluation.status,
+            "git_sha": bench_contract::git_sha(),
+            "target_profile": "local_release_smoke",
+            "command": bench_contract::canonical_command(&command_args),
+            "seed": 1,
+            "metrics": json_report::metric_map(metrics),
+            "targets": {},
+            "target_results": [],
+            "failures": [],
+            "confidence": {},
+            "artifacts": json_report::artifacts(None, None),
+        });
+        json_report::append_evaluation_fields(&mut report, &evaluation);
+        json_report::write_json_line(io::stdout(), &report)?;
     } else {
         println!("terminal_cases_passed={passed}/{cases}");
     }
     Ok(())
-}
-
-fn run_uci() -> Result<(), String> {
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
-    let mut position = Position::startpos().map_err(|err| format!("startpos failed: {err:?}"))?;
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|err| err.to_string())?;
-        let command = line.trim();
-        if command == "uci" {
-            writeln!(stdout, "id name ArK-V4 Forge").map_err(|err| err.to_string())?;
-            writeln!(stdout, "id author Ark Contributors").map_err(|err| err.to_string())?;
-            writeln!(stdout, "uciok").map_err(|err| err.to_string())?;
-        } else if command == "isready" {
-            writeln!(stdout, "readyok").map_err(|err| err.to_string())?;
-        } else if command == "ucinewgame" {
-            position = Position::startpos().map_err(|err| format!("startpos failed: {err:?}"))?;
-        } else if command.starts_with("position ") {
-            position = parse_position(command)?;
-        } else if command.starts_with("go") {
-            let depth = command
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .windows(2)
-                .find_map(|pair| (pair[0] == "depth").then_some(pair[1]))
-                .and_then(|text| text.parse::<u32>().ok())
-                .unwrap_or(1);
-            let request = SearchRequest {
-                depth,
-                nodes: command_value(command, "nodes").and_then(|text| text.parse::<u64>().ok()),
-                movetime_ms: command_value(command, "movetime")
-                    .and_then(|text| text.parse::<u64>().ok()),
-                seed: 1,
-                ..SearchRequest::default()
-            };
-            let result = search(&position, &request);
-            let best = result
-                .best_move
-                .map_or_else(|| "0000".to_string(), |mv| mv.to_string());
-            writeln!(
-                stdout,
-                "info depth {} nodes {} score cp {} pv {}",
-                result.depth_reached,
-                result.nodes,
-                result.score,
-                result
-                    .pv
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )
-            .map_err(|err| err.to_string())?;
-            writeln!(stdout, "bestmove {best}").map_err(|err| err.to_string())?;
-        } else if command == "quit" {
-            break;
-        }
-        stdout.flush().map_err(|err| err.to_string())?;
-    }
-    Ok(())
-}
-
-fn command_value<'a>(command: &'a str, name: &str) -> Option<&'a str> {
-    command
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .windows(2)
-        .find_map(|pair| (pair[0] == name).then_some(pair[1]))
 }
 
 fn command_args(command: &str, args: &[String]) -> Vec<String> {
@@ -860,6 +813,18 @@ fn run_selfplay(args: &[String]) -> Result<(), String> {
         metrics.insert("positions_emitted", Some(MetricValue::U64(summary.plies)));
         metrics.insert("search_nodes", Some(MetricValue::U64(summary.search_nodes)));
         metrics.insert(
+            "root_movegen_calls",
+            Some(MetricValue::U64(summary.root_movegen_calls)),
+        );
+        metrics.insert(
+            "node_movegen_calls",
+            Some(MetricValue::U64(summary.node_movegen_calls)),
+        );
+        metrics.insert(
+            "total_movegen_calls",
+            Some(MetricValue::U64(summary.total_movegen_calls)),
+        );
+        metrics.insert(
             "search_nodes_per_second",
             Some(MetricValue::F64(search_nodes_per_second)),
         );
@@ -891,6 +856,10 @@ fn run_selfplay(args: &[String]) -> Result<(), String> {
             Some(MetricValue::U64(u64::from(config.actors))),
         );
         metrics.insert("p95_actor_skew", Some(MetricValue::F64(p95_actor_skew)));
+        metrics.insert(
+            "chunks_published",
+            Some(MetricValue::U64(u64::from(summary.chunks_published))),
+        );
         metrics.insert("cpu_utilization_percent", None);
         metrics.insert("rss_mb", None);
         metrics.insert("rss_growth_percent", None);
@@ -898,41 +867,26 @@ fn run_selfplay(args: &[String]) -> Result<(), String> {
         metrics.insert("python_hot_path_ms", Some(MetricValue::U64(0)));
         let evaluation = bench_contract::evaluate(&targets, &metrics);
         let command_args = command_args("selfplay", args);
-        println!(
-            "{{\"schema_version\":\"{}\",\"benchmark_id\":\"{}\",\"status\":\"{}\",\"git_sha\":\"{}\",\"target_profile\":\"{}\",\"command\":\"{}\",\"seed\":{},\"move_order\":\"{}\",\"leaf_eval\":\"{}\",\"checkpoint_loaded\":{},\"metrics\":{{\"games_requested\":{},\"games_completed\":{},\"games_per_second\":{},\"plies\":{},\"plies_per_second\":{},\"positions_emitted\":{},\"search_nodes\":{},\"search_nodes_per_second\":{},\"neutral_frontier_evals\":{},\"wdl_leaf_evals\":{},\"illegal_moves\":{},\"unhandled_terminal_states\":{},\"timeouts\":0,\"actor_crashes\":{},\"actor_count\":{},\"p95_actor_skew\":{},\"chunks_published\":{},\"cpu_utilization_percent\":null,\"rss_mb\":null,\"rss_growth_percent\":null,\"committed_artifacts\":0,\"python_hot_path_ms\":0}},\"targets\":{},\"target_results\":{},\"failures\":{},\"confidence\":{},\"artifacts\":{{\"committed_artifacts\":0,\"game_output_path\":\"{}\",\"replay_format\":\"{}\"}}}}",
-            bench_contract::SCHEMA_VERSION,
-            benchmark_id,
-            evaluation.status,
-            bench_contract::escape_json(&bench_contract::git_sha()),
-            target_profile,
-            bench_contract::escape_json(&bench_contract::canonical_command(&command_args)),
-            config.seed,
-            bench_contract::escape_json(&config.move_order),
-            leaf_eval_name(config.leaf_eval),
-            checkpoint_loaded,
-            config.games,
-            summary.games_completed,
-            bench_contract::json_optional_metric(Some(MetricValue::F64(games_per_second))),
-            summary.plies,
-            bench_contract::json_optional_metric(Some(MetricValue::F64(plies_per_second))),
-            summary.plies,
-            summary.search_nodes,
-            bench_contract::json_optional_metric(Some(MetricValue::F64(search_nodes_per_second))),
-            summary.neutral_frontier_evals,
-            summary.wdl_leaf_evals,
-            summary.illegal_moves,
-            summary.unhandled_terminal_states,
-            summary.actor_crashes,
-            config.actors,
-            bench_contract::json_optional_metric(Some(MetricValue::F64(p95_actor_skew))),
-            summary.chunks_published,
-            evaluation.targets_json,
-            evaluation.target_results_json,
-            evaluation.failures_json,
-            bench_contract::confidence_json(),
-            json_escape(&config.out),
-            summary.replay_format
-        );
+        let mut report = json!({
+            "schema_version": bench_contract::SCHEMA_VERSION,
+            "benchmark_id": benchmark_id,
+            "status": evaluation.status,
+            "git_sha": bench_contract::git_sha(),
+            "target_profile": target_profile,
+            "command": bench_contract::canonical_command(&command_args),
+            "seed": config.seed,
+            "move_order": config.move_order,
+            "leaf_eval": leaf_eval_name(config.leaf_eval),
+            "checkpoint_loaded": checkpoint_loaded,
+            "metrics": json_report::metric_map(metrics),
+            "targets": {},
+            "target_results": [],
+            "failures": [],
+            "confidence": {},
+            "artifacts": json_report::artifacts(Some(config.out.clone()), Some(summary.replay_format)),
+        });
+        json_report::append_evaluation_fields(&mut report, &evaluation);
+        json_report::write_json_line(io::stdout(), &report)?;
     } else {
         println!(
             "games={} plies={} out={}",
@@ -1110,6 +1064,9 @@ struct SelfPlaySummary {
     games_completed: u32,
     plies: u64,
     search_nodes: u64,
+    root_movegen_calls: u64,
+    node_movegen_calls: u64,
+    total_movegen_calls: u64,
     neutral_frontier_evals: u64,
     wdl_leaf_evals: u64,
     actor_crashes: u32,
@@ -1125,6 +1082,9 @@ struct CompletedCliGame {
     game_index: u32,
     record: GameRecord,
     search_nodes: u64,
+    root_movegen_calls: u64,
+    node_movegen_calls: u64,
+    total_movegen_calls: u64,
     neutral_frontier_evals: u64,
     wdl_leaf_evals: u64,
 }
@@ -1144,6 +1104,9 @@ fn write_selfplay_games(
     }
     let mut indexed_games: Vec<Option<GameRecord>> = vec![None; config.games as usize];
     let mut search_nodes = 0_u64;
+    let mut root_movegen_calls = 0_u64;
+    let mut node_movegen_calls = 0_u64;
+    let mut total_movegen_calls = 0_u64;
     let mut neutral_frontier_evals = 0_u64;
     let mut wdl_leaf_evals = 0_u64;
     let mut actor_crashes = 0_u32;
@@ -1160,6 +1123,9 @@ fn write_selfplay_games(
                     if let Some(slot) = indexed_games.get_mut(completed.game_index as usize) {
                         *slot = Some(completed.record);
                         search_nodes += completed.search_nodes;
+                        root_movegen_calls += completed.root_movegen_calls;
+                        node_movegen_calls += completed.node_movegen_calls;
+                        total_movegen_calls += completed.total_movegen_calls;
                         neutral_frontier_evals += completed.neutral_frontier_evals;
                         wdl_leaf_evals += completed.wdl_leaf_evals;
                     }
@@ -1181,6 +1147,9 @@ fn write_selfplay_games(
         games_completed: replay.games,
         plies: replay.plies,
         search_nodes,
+        root_movegen_calls,
+        node_movegen_calls,
+        total_movegen_calls,
         neutral_frontier_evals,
         wdl_leaf_evals,
         actor_crashes,
@@ -1212,6 +1181,9 @@ fn write_streaming_selfplay_games(
         games_completed: summary.games_completed,
         plies: summary.plies,
         search_nodes: summary.search_nodes,
+        root_movegen_calls: summary.root_movegen_calls,
+        node_movegen_calls: summary.node_movegen_calls,
+        total_movegen_calls: summary.total_movegen_calls,
         neutral_frontier_evals: summary.neutral_frontier_evals,
         wdl_leaf_evals: summary.wdl_leaf_evals,
         actor_crashes: summary.actor_crashes,
@@ -1231,15 +1203,7 @@ fn actor_games(
     let mut records = Vec::new();
     let mut game_index = actor_id;
     while game_index < config.games {
-        let (record, search_nodes, neutral_frontier_evals, wdl_leaf_evals) =
-            play_one_game(game_index, &config, model.as_ref())?;
-        records.push(CompletedCliGame {
-            game_index,
-            record,
-            search_nodes,
-            neutral_frontier_evals,
-            wdl_leaf_evals,
-        });
+        records.push(play_one_game(game_index, &config, model.as_ref())?);
         game_index = game_index.saturating_add(config.actors);
     }
     Ok(records)
@@ -1249,13 +1213,17 @@ fn play_one_game(
     game_index: u32,
     config: &SelfPlayConfig,
     model: Option<&ForgeModel>,
-) -> Result<(GameRecord, u64, u64, u64), String> {
+) -> Result<CompletedCliGame, String> {
     let mut state = GameState::startpos().map_err(|err| format!("startpos failed: {err:?}"))?;
     let mut moves = Vec::with_capacity(config.max_plies as usize);
     let mut result = GameOutcome::Draw;
     let mut search_nodes = 0_u64;
+    let mut root_movegen_calls = 0_u64;
+    let mut node_movegen_calls = 0_u64;
+    let mut total_movegen_calls = 0_u64;
     let mut neutral_frontier_evals = 0_u64;
     let mut wdl_leaf_evals = 0_u64;
+    let mut legal_moves = MoveList::with_capacity(96);
     let mut orderer = model.map(|model| ModelMoveOrderer {
         model,
         workspace: PolicyMoveWorkspace::default(),
@@ -1273,7 +1241,11 @@ fn play_one_game(
         }
     };
     for ply in 0..config.max_plies {
-        if let Some(outcome) = state.outcome() {
+        legal_moves.clear();
+        state.position().legal_moves_into(&mut legal_moves);
+        root_movegen_calls = root_movegen_calls.saturating_add(1);
+        total_movegen_calls = total_movegen_calls.saturating_add(1);
+        if let Some(outcome) = state.outcome_from_legal_moves(&legal_moves) {
             result = outcome;
             break;
         }
@@ -1289,9 +1261,20 @@ fn play_one_game(
         let leaf_evaluator = leaf_evaluator
             .as_mut()
             .map(|evaluator| evaluator as &mut dyn SearchLeafEvaluator);
-        let search_result =
-            search_with_context(state.position(), &request, move_orderer, leaf_evaluator);
+        let search_result = search_with_context_and_root_moves(
+            state.position(),
+            &request,
+            &legal_moves,
+            move_orderer,
+            leaf_evaluator,
+        );
         search_nodes += search_result.nodes;
+        root_movegen_calls =
+            root_movegen_calls.saturating_add(search_result.trace.root_movegen_calls);
+        node_movegen_calls =
+            node_movegen_calls.saturating_add(search_result.trace.node_movegen_calls);
+        total_movegen_calls =
+            total_movegen_calls.saturating_add(search_result.trace.total_movegen_calls);
         neutral_frontier_evals += search_result.trace.neutral_frontier_evals;
         wdl_leaf_evals += search_result.trace.external_leaf_eval_calls;
         let Some(best) = search_result.best_move else {
@@ -1300,15 +1283,23 @@ fn play_one_game(
         state.make_move(best);
         moves.push(best.packed_id());
     }
-    if let Some(outcome) = state.outcome() {
+    legal_moves.clear();
+    state.position().legal_moves_into(&mut legal_moves);
+    root_movegen_calls = root_movegen_calls.saturating_add(1);
+    total_movegen_calls = total_movegen_calls.saturating_add(1);
+    if let Some(outcome) = state.outcome_from_legal_moves(&legal_moves) {
         result = outcome;
     }
-    Ok((
-        GameRecord { result, moves },
+    Ok(CompletedCliGame {
+        game_index,
+        record: GameRecord { result, moves },
         search_nodes,
+        root_movegen_calls,
+        node_movegen_calls,
+        total_movegen_calls,
         neutral_frontier_evals,
         wdl_leaf_evals,
-    ))
+    })
 }
 
 fn load_selfplay_config(path: &str) -> Result<SelfPlayConfig, String> {
@@ -1355,14 +1346,6 @@ fn parse_bool(text: &str, name: &str) -> Result<bool, String> {
         "false" => Ok(false),
         _ => Err(format!("{name} must be true or false")),
     }
-}
-
-fn json_escape(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn json_option_u64(value: Option<u64>) -> String {
-    value.map_or_else(|| "null".to_string(), |value| value.to_string())
 }
 
 #[derive(Clone, Debug)]
@@ -1419,15 +1402,17 @@ fn run_train(args: &[String]) -> Result<(), String> {
     let summary = model.train_games(&games, config.steps, config.learning_rate);
     model.save(Path::new(&config.out))?;
     if option_present(args, "--json") {
-        println!(
-            "{{\"schema_version\":\"ark-v4-train-v1\",\"checkpoint\":\"{}\",\"replay\":\"{}\",\"training_steps\":{},\"games_seen\":{},\"plies_seen\":{},\"policy_nonzero\":{},\"heads\":[\"policy\",\"wdl\",\"moves_left\",\"uncertainty\",\"risk\",\"refutation\"]}}",
-            json_escape(&config.out),
-            json_escape(&config.replay),
-            summary.training_steps,
-            summary.games_seen,
-            summary.plies_seen,
-            summary.policy_nonzero
-        );
+        let report = json!({
+            "schema_version": "ark-v4-train-v1",
+            "checkpoint": config.out,
+            "replay": config.replay,
+            "training_steps": summary.training_steps,
+            "games_seen": summary.games_seen,
+            "plies_seen": summary.plies_seen,
+            "policy_nonzero": summary.policy_nonzero,
+            "heads": ["policy", "wdl", "moves_left", "uncertainty", "risk", "refutation"],
+        });
+        json_report::write_json_line(io::stdout(), &report)?;
     } else {
         println!(
             "checkpoint={} steps={} games={} plies={}",
@@ -1502,15 +1487,16 @@ fn run_eval_baseline(args: &[String]) -> Result<(), String> {
         false
     };
     if option_present(args, "--json") {
-        println!(
-            "{{\"schema_version\":\"ark-v4-eval-baseline-v1\",\"replay\":\"{}\",\"games\":{},\"plies\":{},\"illegal_moves\":{},\"unhandled_terminal_states\":{},\"checkpoint_loaded\":{}}}",
-            json_escape(replay.as_deref().unwrap_or("")),
-            validation.games,
-            validation.plies,
-            validation.illegal_moves,
-            validation.unhandled_terminal_states,
-            checkpoint_loaded
-        );
+        let report = json!({
+            "schema_version": "ark-v4-eval-baseline-v1",
+            "replay": replay.as_deref().unwrap_or(""),
+            "games": validation.games,
+            "plies": validation.plies,
+            "illegal_moves": validation.illegal_moves,
+            "unhandled_terminal_states": validation.unhandled_terminal_states,
+            "checkpoint_loaded": checkpoint_loaded,
+        });
+        json_report::write_json_line(io::stdout(), &report)?;
     } else {
         println!(
             "games={} plies={} illegal_moves={} unhandled_terminal_states={}",
@@ -1521,45 +1507,4 @@ fn run_eval_baseline(args: &[String]) -> Result<(), String> {
         );
     }
     Ok(())
-}
-
-fn parse_position(command: &str) -> Result<Position, String> {
-    let mut parts = command.split_whitespace();
-    if parts.next() != Some("position") {
-        return Err(format!("unsupported position command: {command}"));
-    }
-    let mut position = match parts.next() {
-        Some("startpos") => {
-            Position::startpos().map_err(|err| format!("startpos failed: {err:?}"))?
-        }
-        Some("fen") => {
-            let mut fen_fields = Vec::new();
-            for part in parts.by_ref() {
-                if part == "moves" {
-                    break;
-                }
-                fen_fields.push(part);
-                if fen_fields.len() == 6 {
-                    break;
-                }
-            }
-            if fen_fields.len() != 6 {
-                return Err(format!("bad FEN in position command: {command}"));
-            }
-            Position::from_fen(&fen_fields.join(" ")).map_err(|err| format!("bad FEN: {err:?}"))?
-        }
-        _ => return Err(format!("unsupported position command: {command}")),
-    };
-    let remaining: Vec<&str> = parts.collect();
-    let move_texts: &[&str] = if remaining.first() == Some(&"moves") {
-        &remaining[1..]
-    } else {
-        remaining.as_slice()
-    };
-    for text in move_texts {
-        position = position
-            .make_uci_move(text)
-            .ok_or_else(|| format!("illegal UCI move in position command: {text}"))?;
-    }
-    Ok(position)
 }

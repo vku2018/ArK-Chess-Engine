@@ -82,8 +82,24 @@ impl GameState {
         {
             return Some(GameOutcome::Draw);
         }
+        let mut legal = crate::MoveList::with_capacity(96);
+        self.position.legal_moves_into(&mut legal);
+        self.outcome_from_legal_moves(&legal)
+    }
+
+    #[must_use]
+    pub fn outcome_from_legal_moves(&self, legal: &[Move]) -> Option<GameOutcome> {
+        if self
+            .repetitions
+            .get(&self.position.zobrist())
+            .copied()
+            .unwrap_or(0)
+            >= 3
+        {
+            return Some(GameOutcome::Draw);
+        }
         self.position
-            .is_terminal()
+            .terminal_from_legal_moves(legal)
             .and_then(GameOutcome::from_terminal_text)
     }
 

@@ -22,6 +22,27 @@ pub trait SearchLeafEvaluator {
     fn evaluate_leaf(&mut self, position: &Position) -> i32;
 }
 
+pub trait SearchStopper {
+    fn should_stop(&self) -> bool;
+}
+
+impl<F> SearchStopper for F
+where
+    F: Fn() -> bool,
+{
+    fn should_stop(&self) -> bool {
+        self()
+    }
+}
+
+struct NeverStop;
+
+impl SearchStopper for NeverStop {
+    fn should_stop(&self) -> bool {
+        false
+    }
+}
+
 impl Default for SearchRequest {
     fn default() -> Self {
         Self {
@@ -40,6 +61,7 @@ pub enum StopReason {
     Nodes,
     Time,
     Terminal,
+    Cancelled,
 }
 
 impl fmt::Display for StopReason {
@@ -49,6 +71,7 @@ impl fmt::Display for StopReason {
             Self::Nodes => write!(f, "nodes"),
             Self::Time => write!(f, "time"),
             Self::Terminal => write!(f, "terminal"),
+            Self::Cancelled => write!(f, "cancelled"),
         }
     }
 }
@@ -63,6 +86,9 @@ pub struct SearchTrace {
     pub stopped_by: StopReason,
     pub pv_complete: bool,
     pub legal_moves_generated: u64,
+    pub root_movegen_calls: u64,
+    pub node_movegen_calls: u64,
+    pub total_movegen_calls: u64,
     pub terminal_leaf_evals: u64,
     pub neutral_frontier_evals: u64,
     pub external_leaf_eval_calls: u64,
@@ -98,6 +124,8 @@ struct SearchState {
     nodes: u64,
     evals: u64,
     legal_moves_generated: u64,
+    root_movegen_calls: u64,
+    node_movegen_calls: u64,
     terminal_leaf_evals: u64,
     neutral_frontier_evals: u64,
     external_leaf_eval_calls: u64,
@@ -160,6 +188,8 @@ impl SearchState {
             nodes: 0,
             evals: 0,
             legal_moves_generated: 0,
+            root_movegen_calls: 0,
+            node_movegen_calls: 0,
             terminal_leaf_evals: 0,
             neutral_frontier_evals: 0,
             external_leaf_eval_calls: 0,
@@ -177,8 +207,19 @@ impl SearchState {
         }
     }
 
-    fn enter_node(&mut self) -> bool {
+    fn continue_search(&mut self, stopper: &dyn SearchStopper) -> bool {
         if self.stopped_by.is_some() {
+            return false;
+        }
+        if stopper.should_stop() {
+            self.stopped_by = Some(StopReason::Cancelled);
+            return false;
+        }
+        true
+    }
+
+    fn enter_node(&mut self, stopper: &dyn SearchStopper) -> bool {
+        if !self.continue_search(stopper) {
             return false;
         }
         if self.node_limit.is_some_and(|limit| self.nodes >= limit) {
@@ -215,26 +256,99 @@ pub fn search_with_context(
     move_orderer: Option<&mut dyn SearchMoveOrderer>,
     leaf_evaluator: Option<&mut dyn SearchLeafEvaluator>,
 ) -> SearchResult {
+    let stopper = NeverStop;
+    search_with_context_and_stopper(position, request, move_orderer, leaf_evaluator, &stopper)
+}
+
+pub fn search_with_context_and_stopper(
+    position: &Position,
+    request: &SearchRequest,
+    move_orderer: Option<&mut dyn SearchMoveOrderer>,
+    leaf_evaluator: Option<&mut dyn SearchLeafEvaluator>,
+    stopper: &dyn SearchStopper,
+) -> SearchResult {
     let mut work = position.clone();
     let mut root_moves = MoveList::with_capacity(96);
     work.legal_moves_in_place_into(&mut root_moves);
-    if root_moves.is_empty() {
+    search_with_owned_root_moves(
+        position,
+        request,
+        root_moves,
+        1,
+        move_orderer,
+        leaf_evaluator,
+        stopper,
+    )
+}
+
+pub fn search_with_context_and_root_moves(
+    position: &Position,
+    request: &SearchRequest,
+    root_moves: &[Move],
+    move_orderer: Option<&mut dyn SearchMoveOrderer>,
+    leaf_evaluator: Option<&mut dyn SearchLeafEvaluator>,
+) -> SearchResult {
+    let stopper = NeverStop;
+    search_with_context_and_root_moves_and_stopper(
+        position,
+        request,
+        root_moves,
+        move_orderer,
+        leaf_evaluator,
+        &stopper,
+    )
+}
+
+fn search_with_context_and_root_moves_and_stopper(
+    position: &Position,
+    request: &SearchRequest,
+    root_moves: &[Move],
+    move_orderer: Option<&mut dyn SearchMoveOrderer>,
+    leaf_evaluator: Option<&mut dyn SearchLeafEvaluator>,
+    stopper: &dyn SearchStopper,
+) -> SearchResult {
+    search_with_owned_root_moves(
+        position,
+        request,
+        root_moves.to_vec(),
+        0,
+        move_orderer,
+        leaf_evaluator,
+        stopper,
+    )
+}
+
+fn search_with_owned_root_moves(
+    position: &Position,
+    request: &SearchRequest,
+    mut root_moves: MoveList,
+    root_movegen_calls: u64,
+    move_orderer: Option<&mut dyn SearchMoveOrderer>,
+    leaf_evaluator: Option<&mut dyn SearchLeafEvaluator>,
+    stopper: &dyn SearchStopper,
+) -> SearchResult {
+    let mut work = position.clone();
+    let root_terminal = position.terminal_from_legal_moves(&root_moves);
+    if let Some(result) = root_terminal {
         return SearchResult {
             best_move: None,
-            score: terminal_score(position, position.side_to_move()),
+            score: terminal_score_from_text(result, position.side_to_move()),
             pv: Vec::new(),
             nodes: 0,
             depth_reached: 0,
             evals: 1,
             trace: SearchTrace {
-                root_moves: 0,
+                root_moves: root_moves.len(),
                 requested_depth: request.depth,
                 node_limit: request.nodes,
                 movetime_ms: request.movetime_ms,
                 terminal_only: true,
                 stopped_by: StopReason::Terminal,
                 pv_complete: true,
-                legal_moves_generated: 0,
+                legal_moves_generated: root_moves.len() as u64,
+                root_movegen_calls,
+                node_movegen_calls: 0,
+                total_movegen_calls: root_movegen_calls,
                 terminal_leaf_evals: 1,
                 neutral_frontier_evals: 0,
                 external_leaf_eval_calls: 0,
@@ -255,6 +369,7 @@ pub fn search_with_context(
     let root_move_count = root_moves.len();
     order_root_moves(&mut root_moves, request.seed);
     let mut state = SearchState::new(request);
+    state.root_movegen_calls = root_movegen_calls;
     let mut hooks = SearchHooks {
         move_orderer,
         leaf_evaluator,
@@ -278,7 +393,7 @@ pub fn search_with_context(
         let mut depth_score = i32::MIN + 1;
         let mut depth_pv = vec![depth_best];
         for mv in &root_moves {
-            if !state.enter_node() {
+            if !state.enter_node(stopper) {
                 break;
             }
             let undo = work.make_move_in_place(*mv);
@@ -294,6 +409,7 @@ pub fn search_with_context(
                 },
                 &mut state,
                 &mut hooks,
+                stopper,
             );
             work.unmake_move(undo);
             if state.stopped_by.is_some() {
@@ -336,6 +452,9 @@ pub fn search_with_context(
             stopped_by,
             pv_complete: stopped_by == StopReason::Depth || stopped_by == StopReason::Terminal,
             legal_moves_generated: state.legal_moves_generated + root_move_count as u64,
+            root_movegen_calls: state.root_movegen_calls,
+            node_movegen_calls: state.node_movegen_calls,
+            total_movegen_calls: state.root_movegen_calls + state.node_movegen_calls,
             terminal_leaf_evals: state.terminal_leaf_evals,
             neutral_frontier_evals: state.neutral_frontier_evals,
             external_leaf_eval_calls: state.external_leaf_eval_calls,
@@ -367,16 +486,24 @@ fn negamax(
     frame: SearchFrame,
     state: &mut SearchState,
     hooks: &mut SearchHooks<'_, '_>,
+    stopper: &dyn SearchStopper,
 ) -> (i32, Vec<Move>) {
     let depth = frame.depth;
     let extension_remaining = frame.extension_remaining;
     let mut alpha = frame.window.alpha;
     let beta = frame.window.beta;
-    if let Some(_result) = position.is_terminal() {
+    if !state.continue_search(stopper) {
+        return (0, Vec::new());
+    }
+    let mut moves = MoveList::with_capacity(96);
+    position.legal_moves_in_place_into(&mut moves);
+    state.node_movegen_calls += 1;
+    state.legal_moves_generated += moves.len() as u64;
+    if let Some(result) = position.terminal_from_legal_moves(&moves) {
         state.evals += 1;
         state.terminal_leaf_evals += 1;
         return (
-            terminal_score(position, position.side_to_move()),
+            terminal_score_from_text(result, position.side_to_move()),
             Vec::new(),
         );
     }
@@ -414,9 +541,6 @@ fn negamax(
     let mut best = i32::MIN + 1;
     let mut best_move = None;
     let mut best_line = Vec::new();
-    let mut moves = MoveList::with_capacity(96);
-    position.legal_moves_in_place_into(&mut moves);
-    state.legal_moves_generated += moves.len() as u64;
     if depth == 0 {
         let extend_all = position.in_check(position.side_to_move());
         moves = tactical_frontier_moves(position, &moves, extend_all);
@@ -437,7 +561,7 @@ fn negamax(
         }
     }
     for mv in moves {
-        if !state.enter_node() {
+        if !state.enter_node(stopper) {
             break;
         }
         let undo = position.make_move_in_place(mv);
@@ -459,6 +583,7 @@ fn negamax(
             },
             state,
             hooks,
+            stopper,
         );
         position.unmake_move(undo);
         if state.stopped_by.is_some() {
@@ -555,23 +680,23 @@ fn is_tactical_frontier_move(position: &mut Position, mv: Move) -> bool {
     gives_check
 }
 
-fn terminal_score(position: &Position, root_side: Color) -> i32 {
-    match position.is_terminal() {
-        Some("1-0") => {
+fn terminal_score_from_text(result: &str, root_side: Color) -> i32 {
+    match result {
+        "1-0" => {
             if root_side == Color::White {
                 100_000
             } else {
                 -100_000
             }
         }
-        Some("0-1") => {
+        "0-1" => {
             if root_side == Color::Black {
                 100_000
             } else {
                 -100_000
             }
         }
-        Some("1/2-1/2") => 0,
+        "1/2-1/2" => 0,
         _ => 0,
     }
 }

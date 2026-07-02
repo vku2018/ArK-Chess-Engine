@@ -9,6 +9,7 @@ pub use game::{GameOutcome, GameState};
 pub use mv::{Move, MoveFlag};
 pub use perft::perft;
 pub use search::{
-    search, search_with_context, search_with_move_orderer, SearchLeafEvaluator, SearchMoveOrderer,
-    SearchRequest, SearchResult, SearchTrace, StopReason,
+    search, search_with_context, search_with_context_and_root_moves,
+    search_with_context_and_stopper, search_with_move_orderer, SearchLeafEvaluator,
+    SearchMoveOrderer, SearchRequest, SearchResult, SearchStopper, SearchTrace, StopReason,
 };

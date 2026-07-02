@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
+use serde::{Serialize, Serializer};
+use serde_json::{json, Value};
+
 pub const SCHEMA_VERSION: &str = "ark-v4-forge-bench-v1";
 pub const CONFIDENCE_LEVEL: f64 = 0.95;
 pub const MINIMUM_REPETITIONS: u32 = 5;
@@ -30,6 +33,20 @@ impl MetricValue {
     }
 }
 
+impl Serialize for MetricValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::U64(value) => serializer.serialize_u64(*value),
+            Self::U128(value) => serializer.serialize_u128(*value),
+            Self::F64(value) if value.is_finite() => serializer.serialize_f64(*value),
+            Self::F64(_value) => serializer.serialize_none(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum TargetRule {
     Min,
@@ -38,7 +55,7 @@ pub enum TargetRule {
 }
 
 impl TargetRule {
-    fn as_json(self) -> &'static str {
+    pub const fn as_json(self) -> &'static str {
         match self {
             Self::Min => "gte",
             Self::Max => "lte",
@@ -93,11 +110,26 @@ impl Target {
 }
 
 #[derive(Clone, Debug)]
+pub struct TargetResult {
+    pub target_name: &'static str,
+    pub metric: &'static str,
+    pub rule: TargetRule,
+    pub observed: Option<MetricValue>,
+    pub target_value: MetricValue,
+    pub passed: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct EvaluationData {
+    pub targets: BTreeMap<&'static str, MetricValue>,
+    pub target_results: Vec<TargetResult>,
+    pub failures: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct Evaluation {
     pub status: &'static str,
-    pub targets_json: String,
-    pub target_results_json: String,
-    pub failures_json: String,
+    pub data: EvaluationData,
 }
 
 pub fn evaluate(
@@ -105,7 +137,7 @@ pub fn evaluate(
     metrics: &BTreeMap<&'static str, Option<MetricValue>>,
 ) -> Evaluation {
     let mut all_passed = !targets.is_empty();
-    let mut target_results = Vec::new();
+    let mut target_results = Vec::with_capacity(targets.len());
     let mut failures = Vec::new();
 
     if targets.is_empty() {
@@ -119,32 +151,26 @@ pub fn evaluate(
             all_passed = false;
             failures.push(format_failure(target, observed));
         }
-        let observed_json = observed.map_or_else(|| "null".to_string(), MetricValue::to_json);
-        target_results.push(format!(
-            "{{\"target_name\":\"{}\",\"metric\":\"{}\",\"rule\":\"{}\",\"observed\":{},\"target_value\":{},\"passed\":{}}}",
-            escape_json(target.name),
-            escape_json(target.metric),
-            target.rule.as_json(),
-            observed_json,
-            target.value.to_json(),
-            passed
-        ));
+        target_results.push(TargetResult {
+            target_name: target.name,
+            metric: target.metric,
+            rule: target.rule,
+            observed,
+            target_value: target.value,
+            passed,
+        });
     }
+
+    let data = EvaluationData {
+        targets: targets_map(targets),
+        target_results,
+        failures,
+    };
 
     Evaluation {
         status: if all_passed { "pass" } else { "fail" },
-        targets_json: targets_json(targets),
-        target_results_json: format!("[{}]", target_results.join(",")),
-        failures_json: string_array_json(&failures),
+        data,
     }
-}
-
-pub fn confidence_json() -> String {
-    format!(
-        "{{\"level\":{},\"repetitions\":1,\"minimum_repetitions\":{},\"complete\":false,\"ci95_lower\":null,\"ci95_upper\":null}}",
-        format_f64(CONFIDENCE_LEVEL),
-        MINIMUM_REPETITIONS
-    )
 }
 
 pub fn git_sha() -> String {
@@ -177,45 +203,48 @@ pub fn canonical_command(args: &[String]) -> String {
     parts.join(" ")
 }
 
-pub fn escape_json(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for ch in text.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '"' => escaped.push_str("\\\""),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
+pub fn confidence_value(repetitions: u32, complete: bool) -> Value {
+    json!({
+        "level": CONFIDENCE_LEVEL,
+        "repetitions": repetitions,
+        "minimum_repetitions": MINIMUM_REPETITIONS,
+        "complete": complete,
+        "ci95_lower": Value::Null,
+        "ci95_upper": Value::Null,
+    })
 }
 
-pub fn json_optional_metric(value: Option<MetricValue>) -> String {
-    value.map_or_else(|| "null".to_string(), MetricValue::to_json)
+pub fn targets_value(targets: &BTreeMap<&'static str, MetricValue>) -> Value {
+    json!(targets)
 }
 
-fn targets_json(targets: &[Target]) -> String {
-    let fields = targets
+pub fn target_results_value(results: &[TargetResult]) -> Value {
+    Value::Array(
+        results
+            .iter()
+            .map(|result| {
+                json!({
+                    "target_name": result.target_name,
+                    "metric": result.metric,
+                    "rule": result.rule.as_json(),
+                    "observed": result.observed,
+                    "target_value": result.target_value,
+                    "passed": result.passed,
+                })
+            })
+            .collect(),
+    )
+}
+
+pub fn failures_value(failures: &[String]) -> Value {
+    json!(failures)
+}
+
+fn targets_map(targets: &[Target]) -> BTreeMap<&'static str, MetricValue> {
+    targets
         .iter()
-        .map(|target| {
-            format!(
-                "\"{}\":{}",
-                escape_json(target.name),
-                target.value.to_json()
-            )
-        })
-        .collect::<Vec<_>>();
-    format!("{{{}}}", fields.join(","))
-}
-
-fn string_array_json(values: &[String]) -> String {
-    let values = values
-        .iter()
-        .map(|value| format!("\"{}\"", escape_json(value)))
-        .collect::<Vec<_>>();
-    format!("[{}]", values.join(","))
+        .map(|target| (target.name, target.value))
+        .collect()
 }
 
 fn format_failure(target: &Target, observed: Option<MetricValue>) -> String {

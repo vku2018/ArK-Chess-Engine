@@ -1,4 +1,8 @@
+mod common;
+
 use std::process::Command;
+
+use common::parse_single_json;
 
 #[test]
 fn cli_selfplay_train_eval_smoke_loop() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,9 +28,12 @@ fn cli_selfplay_train_eval_smoke_loop() -> Result<(), Box<dyn std::error::Error>
         ])
         .output()?;
     assert!(selfplay.status.success());
-    let selfplay_stdout = String::from_utf8(selfplay.stdout)?;
-    assert!(selfplay_stdout.contains("\"games_completed\":4"));
-    assert!(selfplay_stdout.contains("\"actor_crashes\":0"));
+    let selfplay_json = parse_single_json(selfplay.stdout)?;
+    assert_eq!(selfplay_json["metrics"]["games_completed"], 4);
+    assert_eq!(selfplay_json["metrics"]["actor_crashes"], 0);
+    assert!(selfplay_json["metrics"]["total_movegen_calls"]
+        .as_u64()
+        .is_some());
 
     let train = Command::new(env!("CARGO_BIN_EXE_ark"))
         .args([
@@ -41,9 +48,9 @@ fn cli_selfplay_train_eval_smoke_loop() -> Result<(), Box<dyn std::error::Error>
         ])
         .output()?;
     assert!(train.status.success());
-    let train_stdout = String::from_utf8(train.stdout)?;
-    assert!(train_stdout.contains("\"training_steps\":2"));
-    assert!(!train_stdout.contains("\"policy_nonzero\":0"));
+    let train_json = parse_single_json(train.stdout)?;
+    assert_eq!(train_json["training_steps"], 2);
+    assert_ne!(train_json["policy_nonzero"], 0);
 
     let eval = Command::new(env!("CARGO_BIN_EXE_ark"))
         .args([
@@ -59,9 +66,9 @@ fn cli_selfplay_train_eval_smoke_loop() -> Result<(), Box<dyn std::error::Error>
         ])
         .output()?;
     assert!(eval.status.success());
-    let eval_stdout = String::from_utf8(eval.stdout)?;
-    assert!(eval_stdout.contains("\"illegal_moves\":0"));
-    assert!(eval_stdout.contains("\"checkpoint_loaded\":true"));
+    let eval_json = parse_single_json(eval.stdout)?;
+    assert_eq!(eval_json["illegal_moves"], 0);
+    assert_eq!(eval_json["checkpoint_loaded"], true);
 
     let search = Command::new(env!("CARGO_BIN_EXE_ark"))
         .args([
@@ -78,13 +85,11 @@ fn cli_selfplay_train_eval_smoke_loop() -> Result<(), Box<dyn std::error::Error>
         ])
         .output()?;
     assert!(search.status.success());
-    let search_stdout = String::from_utf8(search.stdout)?;
-    assert!(search_stdout.contains("\"checkpoint_loaded\":true"));
-    assert!(search_stdout.contains("\"move_order\":\"model\""));
-    assert!(
-        search_stdout.contains("\"model_ordered_root_moves\":20"),
-        "{search_stdout}"
-    );
+    let search_json = parse_single_json(search.stdout)?;
+    assert_eq!(search_json["checkpoint_loaded"], true);
+    assert_eq!(search_json["move_order"], "model");
+    assert_eq!(search_json["metrics"]["model_ordered_root_moves"], 20);
+    assert_eq!(search_json["metrics"]["root_movegen_calls"], 1);
 
     let wdl_search = Command::new(env!("CARGO_BIN_EXE_ark"))
         .args([
@@ -101,19 +106,10 @@ fn cli_selfplay_train_eval_smoke_loop() -> Result<(), Box<dyn std::error::Error>
         ])
         .output()?;
     assert!(wdl_search.status.success());
-    let wdl_search_stdout = String::from_utf8(wdl_search.stdout)?;
-    assert!(
-        wdl_search_stdout.contains("\"leaf_eval\":\"wdl\""),
-        "{wdl_search_stdout}"
-    );
-    assert!(
-        wdl_search_stdout.contains("\"checkpoint_loaded\":true"),
-        "{wdl_search_stdout}"
-    );
-    assert!(
-        !wdl_search_stdout.contains("\"wdl_leaf_evals\":0"),
-        "{wdl_search_stdout}"
-    );
+    let wdl_search_json = parse_single_json(wdl_search.stdout)?;
+    assert_eq!(wdl_search_json["leaf_eval"], "wdl");
+    assert_eq!(wdl_search_json["checkpoint_loaded"], true);
+    assert_ne!(wdl_search_json["metrics"]["wdl_leaf_evals"], 0);
 
     let _ = std::fs::remove_file(replay);
     let _ = std::fs::remove_file(checkpoint);

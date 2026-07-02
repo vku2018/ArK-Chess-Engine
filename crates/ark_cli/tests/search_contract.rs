@@ -1,4 +1,8 @@
+mod common;
+
 use std::process::Command;
+
+use common::parse_single_json;
 
 #[test]
 fn search_json_fails_when_depth_target_is_missed() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,31 +23,37 @@ fn search_json_fails_when_depth_target_is_missed() -> Result<(), Box<dyn std::er
         ])
         .output()?;
     assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout)?;
-    assert_eq!(stdout.lines().count(), 1, "{stdout}");
-    for required in [
-        "\"schema_version\":\"ark-v4-forge-bench-v1\"",
-        "\"benchmark_id\":",
-        "\"status\":\"fail\"",
-        "\"git_sha\":",
-        "\"command\":\"cargo run --release -p ark_cli -- search",
-        "\"metrics\":",
-        "\"nodes\":1",
-        "\"depth_completed\":0",
-        "\"targets\":{\"depth_completed_min\":4",
-        "\"target_results\":",
-        "\"target_name\":\"depth_completed_min\"",
-        "\"observed\":0",
-        "\"target_value\":4",
-        "\"passed\":false",
-        "\"failures\":[\"depth_completed_min failed",
-        "\"confidence\":{\"level\":0.95,\"repetitions\":1,\"minimum_repetitions\":5,\"complete\":false",
-        "\"non_terminal_static_eval_calls\":0",
-        "\"python_hot_path_ms\":0",
-        "\"artifacts\":",
-    ] {
-        assert!(stdout.contains(required), "missing {required} in {stdout}");
-    }
+    let json = parse_single_json(output.stdout)?;
+    assert_eq!(json["schema_version"], "ark-v4-forge-bench-v1");
+    assert_eq!(json["status"], "fail");
+    assert!(json["git_sha"].as_str().is_some());
+    assert!(json["command"]
+        .as_str()
+        .is_some_and(|command| command.starts_with("cargo run --release -p ark_cli -- search")));
+    assert_eq!(json["metrics"]["nodes"], 1);
+    assert_eq!(json["metrics"]["depth_completed"], 0);
+    assert_eq!(json["metrics"]["root_movegen_calls"], 1);
+    assert!(json["metrics"]["total_movegen_calls"]
+        .as_u64()
+        .is_some_and(|calls| calls >= 1));
+    assert_eq!(json["metrics"]["non_terminal_static_eval_calls"], 0);
+    assert_eq!(json["metrics"]["python_hot_path_ms"], 0);
+    assert_eq!(json["targets"]["depth_completed_min"], 4);
+    assert_eq!(
+        json["target_results"][0]["target_name"],
+        "depth_completed_min"
+    );
+    assert_eq!(json["target_results"][0]["observed"], 0);
+    assert_eq!(json["target_results"][0]["target_value"], 4);
+    assert_eq!(json["target_results"][0]["passed"], false);
+    assert!(json["failures"][0]
+        .as_str()
+        .is_some_and(|failure| failure.contains("depth_completed_min failed")));
+    assert_eq!(json["confidence"]["level"], 0.95);
+    assert_eq!(json["confidence"]["repetitions"], 1);
+    assert_eq!(json["confidence"]["minimum_repetitions"], 5);
+    assert_eq!(json["confidence"]["complete"], false);
+    assert_eq!(json["artifacts"]["committed_artifacts"], 0);
     Ok(())
 }
 
@@ -64,22 +74,44 @@ fn search_json_passes_when_ad_hoc_targets_are_met() -> Result<(), Box<dyn std::e
         ])
         .output()?;
     assert!(output.status.success());
-    let stdout = String::from_utf8(output.stdout)?;
-    assert_eq!(stdout.lines().count(), 1, "{stdout}");
-    for required in [
-        "\"schema_version\":\"ark-v4-forge-bench-v1\"",
-        "\"benchmark_id\":\"forge-search-adhoc\"",
-        "\"status\":\"pass\"",
-        "\"target_profile\":\"ad_hoc\"",
-        "\"leaf_eval\":\"terminal\"",
-        "\"wdl_leaf_evals\":0",
-        "\"depth_completed\":1",
-        "\"targets\":{\"depth_completed_min\":1",
-        "\"failures\":[]",
-        "\"committed_artifacts\":0",
-    ] {
-        assert!(stdout.contains(required), "missing {required} in {stdout}");
-    }
+    let json = parse_single_json(output.stdout)?;
+    assert_eq!(json["schema_version"], "ark-v4-forge-bench-v1");
+    assert_eq!(json["benchmark_id"], "forge-search-adhoc");
+    assert_eq!(json["status"], "pass");
+    assert_eq!(json["target_profile"], "ad_hoc");
+    assert_eq!(json["leaf_eval"], "terminal");
+    assert_eq!(json["metrics"]["wdl_leaf_evals"], 0);
+    assert_eq!(json["metrics"]["depth_completed"], 1);
+    assert_eq!(json["trace"]["root_movegen_calls"], 1);
+    assert!(json["trace"]["node_movegen_calls"].as_u64().is_some());
+    assert!(json["trace"]["total_movegen_calls"].as_u64().is_some());
+    assert_eq!(json["targets"]["depth_completed_min"], 1);
+    assert_eq!(json["failures"].as_array().map(Vec::len), Some(0));
+    assert_eq!(json["artifacts"]["committed_artifacts"], 0);
+    Ok(())
+}
+
+#[test]
+fn search_rejects_threads_above_one() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_ark"))
+        .args([
+            "search",
+            "--fen",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "--depth",
+            "1",
+            "--threads",
+            "2",
+            "--json",
+        ])
+        .output()?;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        stderr.contains("search --threads > 1 is not supported yet; got 2. Use --threads 1."),
+        "{stderr}"
+    );
     Ok(())
 }
 
@@ -121,15 +153,12 @@ fn perft_json_reports_correct_nodes_pass_and_fail() -> Result<(), Box<dyn std::e
         ])
         .output()?;
     assert!(pass.status.success());
-    let pass_stdout = String::from_utf8(pass.stdout)?;
-    assert!(pass_stdout.contains("\"status\":\"pass\""), "{pass_stdout}");
-    assert!(
-        pass_stdout.contains("\"targets\":{\"correct_nodes\":400"),
-        "{pass_stdout}"
-    );
-    assert!(
-        pass_stdout.contains("\"target_name\":\"correct_nodes\""),
-        "{pass_stdout}"
+    let pass_json = parse_single_json(pass.stdout)?;
+    assert_eq!(pass_json["status"], "pass");
+    assert_eq!(pass_json["targets"]["correct_nodes"], 400);
+    assert_eq!(
+        pass_json["target_results"][0]["target_name"],
+        "correct_nodes"
     );
 
     let fail = Command::new(env!("CARGO_BIN_EXE_ark"))
@@ -145,12 +174,11 @@ fn perft_json_reports_correct_nodes_pass_and_fail() -> Result<(), Box<dyn std::e
         ])
         .output()?;
     assert!(fail.status.success());
-    let fail_stdout = String::from_utf8(fail.stdout)?;
-    assert!(fail_stdout.contains("\"status\":\"fail\""), "{fail_stdout}");
-    assert!(
-        fail_stdout.contains("\"correct_nodes failed: observed 400 != target 401\""),
-        "{fail_stdout}"
-    );
+    let fail_json = parse_single_json(fail.stdout)?;
+    assert_eq!(fail_json["status"], "fail");
+    assert!(fail_json["failures"][0]
+        .as_str()
+        .is_some_and(|failure| failure == "correct_nodes failed: observed 400 != target 401"));
     Ok(())
 }
 
@@ -168,5 +196,24 @@ fn perft_bad_fen_exits_non_zero_with_bad_fen() -> Result<(), Box<dyn std::error:
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr)?;
     assert!(stderr.contains("bad FEN"), "{stderr}");
+    Ok(())
+}
+
+#[test]
+fn terminal_leaf_suite_json_is_structural() -> Result<(), Box<dyn std::error::Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_ark"))
+        .args(["terminal-leaf-suite", "--cases", "4", "--json"])
+        .output()?;
+    assert!(output.status.success());
+
+    let json = parse_single_json(output.stdout)?;
+    assert_eq!(json["schema_version"], "ark-v4-forge-bench-v1");
+    assert_eq!(json["benchmark_id"], "forge-search-terminal-leaf-gate");
+    assert_eq!(json["metrics"]["cases"], 4);
+    assert_eq!(json["metrics"]["terminal_cases_passed"], 4);
+    assert_eq!(json["metrics"]["non_terminal_static_eval_calls"], 0);
+    assert!(json["targets"].is_object());
+    assert!(json["target_results"].is_array());
+    assert!(json["failures"].is_array());
     Ok(())
 }

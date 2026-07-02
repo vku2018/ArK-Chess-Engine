@@ -17,3 +17,5 @@ ark_core = { path = "../ark_core" }
 ark_model = { path = "../ark_model" }
 ark_replay = { path = "../ark_replay" }
 ark_selfplay = { path = "../ark_selfplay" }
+serde = "1"
+serde_json = "1"

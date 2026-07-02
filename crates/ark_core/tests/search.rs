@@ -1,6 +1,8 @@
 use ark_core::{
-    search, search_with_context, search_with_move_orderer, Color, Move, Position,
-    SearchLeafEvaluator, SearchMoveOrderer, SearchRequest, StopReason,
+    search, search_with_context, search_with_context_and_root_moves,
+    search_with_context_and_stopper, search_with_move_orderer, Color, GameOutcome, GameState, Move,
+    MoveList, Position, SearchLeafEvaluator, SearchMoveOrderer, SearchRequest, SearchStopper,
+    StopReason,
 };
 
 fn request(depth: u32) -> SearchRequest {
@@ -234,6 +236,78 @@ fn search_reports_terminal_only_trace_counters() -> Result<(), ark_core::FenErro
 }
 
 #[test]
+fn supplied_root_moves_match_regular_search_result() -> Result<(), ark_core::FenError> {
+    let position = Position::startpos()?;
+    let request = request(3);
+    let regular = search(&position, &request);
+    let mut root_moves = MoveList::with_capacity(96);
+    position.legal_moves_into(&mut root_moves);
+    let original_root_moves = root_moves.clone();
+
+    let supplied = search_with_context_and_root_moves(&position, &request, &root_moves, None, None);
+
+    assert_eq!(root_moves, original_root_moves);
+    assert_eq!(supplied.best_move, regular.best_move);
+    assert_eq!(supplied.score, regular.score);
+    assert_eq!(supplied.pv, regular.pv);
+    assert_eq!(supplied.depth_reached, regular.depth_reached);
+    assert_eq!(regular.trace.root_movegen_calls, 1);
+    assert_eq!(supplied.trace.root_movegen_calls, 0);
+    assert!(supplied.trace.node_movegen_calls > 0);
+    assert_eq!(
+        supplied.trace.total_movegen_calls,
+        supplied.trace.root_movegen_calls + supplied.trace.node_movegen_calls
+    );
+    Ok(())
+}
+
+#[test]
+fn cancelled_search_reports_cancelled_stop_reason() -> Result<(), ark_core::FenError> {
+    let position = Position::startpos()?;
+    let request = request(8);
+    let stopper = AlwaysStop;
+
+    let result = search_with_context_and_stopper(&position, &request, None, None, &stopper);
+
+    assert_eq!(result.trace.stopped_by, StopReason::Cancelled);
+    assert_eq!(result.depth_reached, 0);
+    assert!(!result.trace.pv_complete);
+    assert_eq!(result.trace.root_movegen_calls, 1);
+    assert_eq!(result.trace.node_movegen_calls, 0);
+    assert_eq!(result.trace.total_movegen_calls, 1);
+    Ok(())
+}
+
+#[test]
+fn terminal_root_counts_only_root_move_generation() -> Result<(), ark_core::FenError> {
+    let position = Position::from_fen("7k/5Q2/7K/8/8/8/8/8 b - - 0 1")?;
+    let result = search(&position, &request(4));
+
+    assert_eq!(result.trace.stopped_by, StopReason::Terminal);
+    assert_eq!(result.trace.root_moves, 0);
+    assert_eq!(result.trace.root_movegen_calls, 1);
+    assert_eq!(result.trace.node_movegen_calls, 0);
+    assert_eq!(result.trace.total_movegen_calls, 1);
+    Ok(())
+}
+
+#[test]
+fn terminal_helpers_reuse_supplied_legal_moves() -> Result<(), ark_core::FenError> {
+    let position = Position::from_fen("7k/6Q1/5K2/8/8/8/8/8 b - - 0 1")?;
+    let mut legal = MoveList::with_capacity(96);
+    position.legal_moves_into(&mut legal);
+    let state = GameState::from_position(position.clone())?;
+
+    assert!(legal.is_empty());
+    assert_eq!(position.terminal_from_legal_moves(&legal), Some("1-0"));
+    assert_eq!(
+        state.outcome_from_legal_moves(&legal),
+        Some(GameOutcome::WhiteWin)
+    );
+    Ok(())
+}
+
+#[test]
 fn external_orderer_can_choose_root_move_without_static_eval() -> Result<(), ark_core::FenError> {
     let position = Position::startpos()?;
     let preferred = position
@@ -282,5 +356,13 @@ struct PreferredMoveOrderer {
 impl SearchMoveOrderer for PreferredMoveOrderer {
     fn order_moves(&mut self, _position: &Position, moves: &mut [Move]) {
         moves.sort_by_key(|mv| if *mv == self.preferred { 0 } else { 1 });
+    }
+}
+
+struct AlwaysStop;
+
+impl SearchStopper for AlwaysStop {
+    fn should_stop(&self) -> bool {
+        true
     }
 }

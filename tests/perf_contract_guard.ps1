@@ -59,7 +59,6 @@ $ExpectedIds = @(
   "forge-core-perft-kiwipete-d4-gate",
   "forge-search-terminal-leaf-gate",
   "forge-search-startpos-d6-single-baseline",
-  "forge-search-startpos-d6-32cpu-baseline",
   "forge-selfplay-legal-d1-32cpu-baseline",
   "forge-selfplay-search-d3-32cpu-baseline",
   "forge-selfplay-endurance-30m-periodic"
@@ -83,6 +82,9 @@ $Contract.benchmarks | ForEach-Object {
   Assert-True (-not ($Command -match "\barchive\b")) "benchmark command touches archive: $($_.id)"
   Assert-True ($null -ne $_.targets) "benchmark lacks targets: $($_.id)"
   Assert-True ($null -ne $_.target_profile) "benchmark lacks target profile: $($_.id)"
+  if ($Command.StartsWith("cargo run --release -p ark_cli -- search")) {
+    Assert-True (-not ($Command -match "--threads\s+([2-9]|[1-9][0-9]+)")) "active search benchmark uses unsupported threads: $($_.id)"
+  }
 }
 
 $SingleSearch = $ById["forge-search-startpos-d6-single-baseline"].targets
@@ -93,10 +95,17 @@ Assert-True (
 ) "single search uses non-terminal static eval"
 Assert-True ($SingleSearch.python_hot_path_ms_max -eq 0) "single search allows Python hot path"
 
-$ServerSearch = $ById["forge-search-startpos-d6-32cpu-baseline"].targets
-Assert-True ($ServerSearch.nodes_per_second_min -ge 160000000) "32 CPU search NPS target too low"
-Assert-True ($ServerSearch.speedup_vs_single_thread_min -ge 10.0) "32 CPU speedup target too low"
-Assert-True ($ServerSearch.cpu_utilization_percent_min -ge 85) "CPU use target too low"
+$UnsupportedIds = @($Contract.unsupported_benchmarks | ForEach-Object { $_.id })
+Assert-True ($UnsupportedIds -contains "forge-search-startpos-d6-32cpu-baseline") "missing unsupported 32-thread search benchmark"
+$UnsupportedById = @{}
+$Contract.unsupported_benchmarks | ForEach-Object { $UnsupportedById[$_.id] = $_ }
+$UnsupportedSearch = $UnsupportedById["forge-search-startpos-d6-32cpu-baseline"]
+Assert-True ($UnsupportedSearch.command.ToLowerInvariant().Contains("--threads 32")) "unsupported search must preserve 32-thread command"
+Assert-True ($UnsupportedSearch.reason -eq "search_threads_above_one_not_supported") "unsupported search reason changed"
+Assert-True ($UnsupportedSearch.supported_until -eq "search --threads 1") "supported search fallback changed"
+Assert-True ($UnsupportedSearch.targets.nodes_per_second_min -ge 160000000) "32 CPU search NPS target too low"
+Assert-True ($UnsupportedSearch.targets.speedup_vs_single_thread_min -ge 10.0) "32 CPU speedup target too low"
+Assert-True ($UnsupportedSearch.targets.cpu_utilization_percent_min -ge 85) "CPU use target too low"
 
 $SelfPlay = $ById["forge-selfplay-search-d3-32cpu-baseline"].targets
 Assert-True ($SelfPlay.games_completed_min -ge 2048) "self-play completed games target too low"
@@ -115,6 +124,9 @@ Assert-True ($Endurance.actor_crashes_max -eq 0) "endurance permits actor crashe
 $SearchMetrics = @($Contract.required_metrics.search)
 @(
   "python_hot_path_ms",
+  "root_movegen_calls",
+  "node_movegen_calls",
+  "total_movegen_calls",
   "terminal_leaf_evals",
   "neutral_frontier_evals",
   "wdl_leaf_evals",
@@ -135,6 +147,9 @@ $SelfPlayMetrics = @($Contract.required_metrics.self_play)
   "games_per_second",
   "plies_per_second",
   "search_nodes_per_second",
+  "root_movegen_calls",
+  "node_movegen_calls",
+  "total_movegen_calls",
   "neutral_frontier_evals",
   "wdl_leaf_evals",
   "committed_artifacts",
@@ -171,6 +186,9 @@ Assert-True (
 Assert-True (
   $Contract.status_policy.stage0_confidence_complete -eq $false
 ) "Stage 0 must not claim completed confidence intervals"
+Assert-True (
+  $Contract.status_policy.search_threads_above_one -eq "reject"
+) "search threads > 1 policy changed"
 
 $Text = Get-Content -LiteralPath $Doc -Raw
 $Examples = @()
@@ -215,11 +233,18 @@ $Examples | ForEach-Object {
   Assert-True ($Example.confidence.complete -eq $true) "passing example confidence incomplete"
 }
 
+$SearchExample = $Examples | Where-Object { $_.benchmark_id -eq "forge-search-startpos-d6-single-baseline" } | Select-Object -First 1
+Assert-True ($null -ne $SearchExample) "single-thread search example missing"
+Assert-True ($SearchExample.metrics.threads -eq 1) "search example must use one thread"
+
 $ArchiveResetSlash = "archive/" + "reset-"
 $ArchiveResetBackslash = "archive" + "\\reset"
 $ArchiveLegacySlash = "archive/" + "legacy"
 Assert-True (-not ($Text.ToLowerInvariant() -match $ArchiveResetSlash)) "doc references reset archive"
 Assert-True (-not ($Text.ToLowerInvariant() -match $ArchiveResetBackslash)) "doc references reset archive"
 Assert-True (-not ($Text.ToLowerInvariant() -match $ArchiveLegacySlash)) "doc references legacy archive"
+Assert-True (
+  $Text.Contains("search --threads > 1") -and $Text.Contains("is rejected")
+) "doc must state unsupported search threads"
 
 Write-Host "perf contract guard passed"

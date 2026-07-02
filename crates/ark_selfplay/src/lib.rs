@@ -5,8 +5,8 @@ use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::thread;
 
 use ark_core::{
-    search_with_context, GameOutcome, GameState, Move, Position, SearchLeafEvaluator,
-    SearchMoveOrderer, SearchRequest,
+    search_with_context_and_root_moves, GameOutcome, GameState, Move, MoveList, Position,
+    SearchLeafEvaluator, SearchMoveOrderer, SearchRequest,
 };
 use ark_model::{ForgeModel, GameRecord, PolicyMoveWorkspace, WdlEvaluationWorkspace};
 use ark_replay::{rebuild_manifest, write_chunk_atomic, ChunkWriteOptions};
@@ -63,6 +63,9 @@ pub struct ActorCounter {
     pub games: u32,
     pub plies: u64,
     pub search_nodes: u64,
+    pub root_movegen_calls: u64,
+    pub node_movegen_calls: u64,
+    pub total_movegen_calls: u64,
     pub neutral_frontier_evals: u64,
     pub wdl_leaf_evals: u64,
     pub send_failures: u32,
@@ -84,6 +87,9 @@ pub struct StreamingSelfPlaySummary {
     pub games_completed: u32,
     pub plies: u64,
     pub search_nodes: u64,
+    pub root_movegen_calls: u64,
+    pub node_movegen_calls: u64,
+    pub total_movegen_calls: u64,
     pub neutral_frontier_evals: u64,
     pub wdl_leaf_evals: u64,
     pub illegal_moves: u32,
@@ -231,6 +237,9 @@ pub struct SelfPlaySummary {
     pub games_completed: u32,
     pub plies: u64,
     pub search_nodes: u64,
+    pub root_movegen_calls: u64,
+    pub node_movegen_calls: u64,
+    pub total_movegen_calls: u64,
     pub neutral_frontier_evals: u64,
     pub wdl_leaf_evals: u64,
     pub actor_count: u32,
@@ -247,6 +256,9 @@ pub struct CompletedGame {
     pub game_id: u32,
     pub record: GameRecord,
     pub search_nodes: u64,
+    pub root_movegen_calls: u64,
+    pub node_movegen_calls: u64,
+    pub total_movegen_calls: u64,
     pub neutral_frontier_evals: u64,
     pub wdl_leaf_evals: u64,
     pub actor_id: u32,
@@ -280,6 +292,9 @@ struct WriterSummary {
     games_completed: u32,
     plies: u64,
     search_nodes: u64,
+    root_movegen_calls: u64,
+    node_movegen_calls: u64,
+    total_movegen_calls: u64,
     neutral_frontier_evals: u64,
     wdl_leaf_evals: u64,
     chunks_published: u32,
@@ -371,6 +386,9 @@ pub fn run_selfplay(config: SelfPlayConfig) -> SelfPlayResult<SelfPlaySummary> {
         games_completed: writer_summary.games_completed,
         plies: writer_summary.plies,
         search_nodes: writer_summary.search_nodes,
+        root_movegen_calls: writer_summary.root_movegen_calls,
+        node_movegen_calls: writer_summary.node_movegen_calls,
+        total_movegen_calls: writer_summary.total_movegen_calls,
         neutral_frontier_evals: writer_summary.neutral_frontier_evals,
         wdl_leaf_evals: writer_summary.wdl_leaf_evals,
         actor_count: config.actors,
@@ -515,6 +533,9 @@ fn empty_streaming_summary(config: &StreamingSelfPlayConfig) -> StreamingSelfPla
         games_completed: 0,
         plies: 0,
         search_nodes: 0,
+        root_movegen_calls: 0,
+        node_movegen_calls: 0,
+        total_movegen_calls: 0,
         neutral_frontier_evals: 0,
         wdl_leaf_evals: 0,
         illegal_moves: 0,
@@ -545,6 +566,15 @@ fn flush_streaming_games<S>(
         summary.games_completed = summary.games_completed.saturating_add(1);
         summary.plies = summary.plies.saturating_add(u64::from(game.plies));
         summary.search_nodes = summary.search_nodes.saturating_add(game.search_nodes);
+        summary.root_movegen_calls = summary
+            .root_movegen_calls
+            .saturating_add(game.root_movegen_calls);
+        summary.node_movegen_calls = summary
+            .node_movegen_calls
+            .saturating_add(game.node_movegen_calls);
+        summary.total_movegen_calls = summary
+            .total_movegen_calls
+            .saturating_add(game.total_movegen_calls);
         summary.neutral_frontier_evals = summary
             .neutral_frontier_evals
             .saturating_add(game.neutral_frontier_evals);
@@ -578,6 +608,15 @@ fn run_streaming_actor(
             counter.games = counter.games.saturating_add(1);
             counter.plies = counter.plies.saturating_add(u64::from(game.plies));
             counter.search_nodes = counter.search_nodes.saturating_add(game.search_nodes);
+            counter.root_movegen_calls = counter
+                .root_movegen_calls
+                .saturating_add(game.root_movegen_calls);
+            counter.node_movegen_calls = counter
+                .node_movegen_calls
+                .saturating_add(game.node_movegen_calls);
+            counter.total_movegen_calls = counter
+                .total_movegen_calls
+                .saturating_add(game.total_movegen_calls);
             counter.neutral_frontier_evals = counter
                 .neutral_frontier_evals
                 .saturating_add(game.neutral_frontier_evals);
@@ -606,6 +645,9 @@ fn writer_loop(
         games_completed: 0,
         plies: 0,
         search_nodes: 0,
+        root_movegen_calls: 0,
+        node_movegen_calls: 0,
+        total_movegen_calls: 0,
         neutral_frontier_evals: 0,
         wdl_leaf_evals: 0,
         chunks_published: 0,
@@ -619,6 +661,9 @@ fn writer_loop(
             }
             summary.plies += completed.record.moves.len() as u64;
             summary.search_nodes += completed.search_nodes;
+            summary.root_movegen_calls += completed.root_movegen_calls;
+            summary.node_movegen_calls += completed.node_movegen_calls;
+            summary.total_movegen_calls += completed.total_movegen_calls;
             summary.neutral_frontier_evals += completed.neutral_frontier_evals;
             summary.wdl_leaf_evals += completed.wdl_leaf_evals;
             summary.games_completed += 1;
@@ -684,9 +729,13 @@ fn play_completed_game(spec: GamePlaySpec<'_>) -> StreamingSelfPlayResult<Comple
     let mut moves = Vec::with_capacity(spec.max_plies as usize);
     let mut result = GameOutcome::Draw;
     let mut search_nodes = 0_u64;
+    let mut root_movegen_calls = 0_u64;
+    let mut node_movegen_calls = 0_u64;
+    let mut total_movegen_calls = 0_u64;
     let mut neutral_frontier_evals = 0_u64;
     let mut wdl_leaf_evals = 0_u64;
     let mut max_plies_reached = true;
+    let mut legal_moves = MoveList::with_capacity(96);
     let mut orderer = spec.model.map(|model| ModelMoveOrderer {
         model,
         workspace: PolicyMoveWorkspace::default(),
@@ -704,12 +753,15 @@ fn play_completed_game(spec: GamePlaySpec<'_>) -> StreamingSelfPlayResult<Comple
         }
     };
     for ply in 0..spec.max_plies {
-        if let Some(outcome) = state.outcome() {
+        legal_moves.clear();
+        state.position().legal_moves_into(&mut legal_moves);
+        root_movegen_calls = root_movegen_calls.saturating_add(1);
+        total_movegen_calls = total_movegen_calls.saturating_add(1);
+        if let Some(outcome) = state.outcome_from_legal_moves(&legal_moves) {
             result = outcome;
             max_plies_reached = false;
             break;
         }
-        let legal_moves = state.position().legal_moves();
         if legal_moves.is_empty() {
             return Err(SelfPlayError::UnhandledTerminalState {
                 game_id: spec.game_id,
@@ -728,9 +780,20 @@ fn play_completed_game(spec: GamePlaySpec<'_>) -> StreamingSelfPlayResult<Comple
         let leaf_evaluator = leaf_evaluator
             .as_mut()
             .map(|evaluator| evaluator as &mut dyn SearchLeafEvaluator);
-        let search_result =
-            search_with_context(state.position(), &request, move_orderer, leaf_evaluator);
+        let search_result = search_with_context_and_root_moves(
+            state.position(),
+            &request,
+            &legal_moves,
+            move_orderer,
+            leaf_evaluator,
+        );
         search_nodes = search_nodes.saturating_add(search_result.nodes);
+        root_movegen_calls =
+            root_movegen_calls.saturating_add(search_result.trace.root_movegen_calls);
+        node_movegen_calls =
+            node_movegen_calls.saturating_add(search_result.trace.node_movegen_calls);
+        total_movegen_calls =
+            total_movegen_calls.saturating_add(search_result.trace.total_movegen_calls);
         neutral_frontier_evals =
             neutral_frontier_evals.saturating_add(search_result.trace.neutral_frontier_evals);
         wdl_leaf_evals =
@@ -751,15 +814,24 @@ fn play_completed_game(spec: GamePlaySpec<'_>) -> StreamingSelfPlayResult<Comple
         state.make_move(best);
         moves.push(best.packed_id());
     }
-    if let Some(outcome) = state.outcome() {
-        result = outcome;
-        max_plies_reached = false;
+    if max_plies_reached {
+        legal_moves.clear();
+        state.position().legal_moves_into(&mut legal_moves);
+        root_movegen_calls = root_movegen_calls.saturating_add(1);
+        total_movegen_calls = total_movegen_calls.saturating_add(1);
+        if let Some(outcome) = state.outcome_from_legal_moves(&legal_moves) {
+            result = outcome;
+            max_plies_reached = false;
+        }
     }
     let plies = moves.len() as u32;
     Ok(CompletedGame {
         game_id: spec.game_id,
         record: GameRecord { result, moves },
         search_nodes,
+        root_movegen_calls,
+        node_movegen_calls,
+        total_movegen_calls,
         neutral_frontier_evals,
         wdl_leaf_evals,
         actor_id: spec.actor_id,

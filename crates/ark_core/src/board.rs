@@ -420,6 +420,11 @@ impl Position {
     pub fn is_terminal(&self) -> Option<&'static str> {
         let mut legal = MoveList::with_capacity(MOVE_LIST_CAPACITY);
         self.legal_moves_into(&mut legal);
+        self.terminal_from_legal_moves(&legal)
+    }
+
+    #[must_use]
+    pub fn terminal_from_legal_moves(&self, legal: &[Move]) -> Option<&'static str> {
         if legal.is_empty() {
             if self.in_check(self.side_to_move) {
                 Some(if self.side_to_move == Color::White {

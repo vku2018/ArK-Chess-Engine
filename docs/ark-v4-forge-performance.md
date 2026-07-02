@@ -17,7 +17,7 @@ It covers runtime metrics, output contracts, and failure conditions for search a
 
 ## Pass Rules
 
-- Every benchmark command must be runnable from the repo root with `cargo run --release`.
+- Every active benchmark command must be runnable from the repo root with `cargo run --release`.
 - Benchmark stdout must be exactly one JSON object per completed benchmark. Human progress goes to
   stderr only.
 - Throughput metrics pass only when the one-sided 95 percent confidence lower bound meets the target.
@@ -65,6 +65,9 @@ The JSON block below is the source of truth for tests.
       "nodes_per_second",
       "speedup_vs_single_thread",
       "legal_moves_generated",
+      "root_movegen_calls",
+      "node_movegen_calls",
+      "total_movegen_calls",
       "leaf_evals",
       "terminal_leaf_evals",
       "neutral_frontier_evals",
@@ -95,6 +98,9 @@ The JSON block below is the source of truth for tests.
       "plies_per_second",
       "positions_emitted",
       "search_nodes",
+      "root_movegen_calls",
+      "node_movegen_calls",
+      "total_movegen_calls",
       "search_nodes_per_second",
       "neutral_frontier_evals",
       "wdl_leaf_evals",
@@ -131,7 +137,8 @@ The JSON block below is the source of truth for tests.
     "pass_requires_all_target_results_passed": true,
     "unmeasured_target_metric_is_failure": true,
     "failed_targets_must_be_named": true,
-    "stage0_confidence_complete": false
+    "stage0_confidence_complete": false,
+    "search_threads_above_one": "reject"
   },
   "benchmarks": [
     {
@@ -181,20 +188,6 @@ The JSON block below is the source of truth for tests.
         "terminal_leaf_evals_min": 1,
         "non_terminal_static_eval_calls_max": 0,
         "rss_mb_max": 512,
-        "python_hot_path_ms_max": 0
-      }
-    },
-    {
-      "id": "forge-search-startpos-d6-32cpu-baseline",
-      "lane": "baseline",
-      "command": "cargo run --release -p ark_cli -- search --fen \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\" --depth 6 --threads 32 --seed 1729 --json",
-      "target_profile": "server_32_vcpu",
-      "targets": {
-        "depth_completed_min": 6,
-        "nodes_per_second_min": 160000000,
-        "speedup_vs_single_thread_min": 10.0,
-        "cpu_utilization_percent_min": 85,
-        "rss_mb_max": 4096,
         "python_hot_path_ms_max": 0
       }
     },
@@ -249,6 +242,25 @@ The JSON block below is the source of truth for tests.
         "python_hot_path_ms_max": 0
       }
     }
+  ],
+  "unsupported_benchmarks": [
+    {
+      "id": "forge-search-startpos-d6-32cpu-baseline",
+      "lane": "baseline",
+      "command": "cargo run --release -p ark_cli -- search --fen \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\" --depth 6 --threads 32 --seed 1729 --json",
+      "target_profile": "server_32_vcpu",
+      "reason": "search_threads_above_one_not_supported",
+      "supported_until": "search --threads 1",
+      "enablement": "parallel_root_search",
+      "targets": {
+        "depth_completed_min": 6,
+        "nodes_per_second_min": 160000000,
+        "speedup_vs_single_thread_min": 10.0,
+        "cpu_utilization_percent_min": 85,
+        "rss_mb_max": 4096,
+        "python_hot_path_ms_max": 0
+      }
+    }
   ]
 }
 ```
@@ -261,23 +273,23 @@ Search benchmark stdout:
 ```json
 {
   "schema_version": "ark-v4-forge-bench-v1",
-  "benchmark_id": "forge-search-startpos-d6-32cpu-baseline",
+  "benchmark_id": "forge-search-startpos-d6-single-baseline",
   "status": "pass",
   "git_sha": "local-or-ci-sha",
-  "target_profile": "server_32_vcpu",
-  "command": "cargo run --release -p ark_cli -- search --fen \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\" --depth 6 --threads 32 --seed 1729 --json",
+  "target_profile": "server_32_vcpu_single_thread",
+  "command": "cargo run --release -p ark_cli -- search --fen \"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1\" --depth 6 --threads 1 --seed 1729 --json",
   "seed": 1729,
   "move_order": "seed",
   "leaf_eval": "terminal",
   "checkpoint_loaded": false,
   "metrics": {
-    "nodes": 960000000,
-    "nodes_per_second": 180000000,
-    "speedup_vs_single_thread": 11.25,
-    "legal_moves_generated": 1080000000,
-    "leaf_evals": 350000000,
+    "nodes": 78000000,
+    "nodes_per_second": 13000000,
+    "speedup_vs_single_thread": null,
+    "legal_moves_generated": 94000000,
+    "leaf_evals": 28000000,
     "terminal_leaf_evals": 1024,
-    "neutral_frontier_evals": 349998976,
+    "neutral_frontier_evals": 27998976,
     "wdl_leaf_evals": 0,
     "external_leaf_eval_calls": 0,
     "non_terminal_static_eval_calls": 0,
@@ -285,38 +297,49 @@ Search benchmark stdout:
     "model_ordered_moves": 0,
     "tactical_extension_depth": 2,
     "tactical_extension_depth_reached": 2,
-    "tactical_extension_nodes": 16000000,
-    "tactical_extension_moves": 48000000,
-    "transposition_table_probes": 610000000,
+    "tactical_extension_nodes": 1200000,
+    "tactical_extension_moves": 3600000,
+    "transposition_table_probes": 41000000,
     "transposition_table_hit_rate": 0.31,
-    "cutoffs": 240000000,
+    "cutoffs": 18000000,
     "depth_completed": 6,
-    "elapsed_ms": 5334,
-    "threads": 32,
-    "cpu_utilization_percent": 91,
-    "rss_mb": 2048,
+    "elapsed_ms": 6000,
+    "threads": 1,
+    "cpu_utilization_percent": null,
+    "rss_mb": 256,
     "python_hot_path_ms": 0
   },
   "targets": {
-    "nodes_per_second_min": 160000000,
-    "speedup_vs_single_thread_min": 10.0,
+    "depth_completed_min": 6,
+    "nodes_per_second_min": 12000000,
+    "terminal_leaf_evals_min": 1,
+    "non_terminal_static_eval_calls_max": 0,
+    "rss_mb_max": 512,
     "python_hot_path_ms_max": 0
   },
   "target_results": [
     {
-      "target_name": "nodes_per_second_min",
-      "metric": "nodes_per_second",
+      "target_name": "depth_completed_min",
+      "metric": "depth_completed",
       "rule": "gte",
-      "observed": 180000000,
-      "target_value": 160000000,
+      "observed": 6,
+      "target_value": 6,
       "passed": true
     },
     {
-      "target_name": "speedup_vs_single_thread_min",
-      "metric": "speedup_vs_single_thread",
+      "target_name": "nodes_per_second_min",
+      "metric": "nodes_per_second",
       "rule": "gte",
-      "observed": 11.25,
-      "target_value": 10.0,
+      "observed": 13000000,
+      "target_value": 12000000,
+      "passed": true
+    },
+    {
+      "target_name": "terminal_leaf_evals_min",
+      "metric": "terminal_leaf_evals",
+      "rule": "gte",
+      "observed": 1024,
+      "target_value": 1,
       "passed": true
     },
     {
@@ -335,8 +358,7 @@ Search benchmark stdout:
     "minimum_repetitions": 5,
     "complete": true,
     "ci95_lower": {
-      "nodes_per_second": 171000000,
-      "speedup_vs_single_thread": 10.7
+      "nodes_per_second": 12600000
     },
     "ci95_upper": {}
   },
@@ -452,13 +474,17 @@ Self-play benchmark stdout:
   otherwise it fails with `missing_targets`.
 - Search benchmarks must report both raw search nodes and legal moves generated so movegen and search
   regressions are separable.
+- `search --threads > 1` is rejected until parallel root search exists. The 32-thread search
+  target remains documented under `unsupported_benchmarks`, not as an active runnable benchmark.
 - Terminal leaf eval is the default baseline: non-terminal depth leaves return the neutral bootstrap
   value without a handcrafted evaluator and without a Python callback. WDL leaf eval is allowed only
   when a checkpoint is explicitly supplied.
 - Self-play actor scheduling must live in Rust. A coordinator may write JSONL games, but games are
   performance outputs, not source files.
-- The first 32-vCPU target is accepted only when single-thread and 32-thread numbers are both present,
-  because aggregate throughput without scaling evidence hides contention.
+- The first 32-vCPU self-play target is accepted only when actor throughput and search-node
+  throughput are both present, because aggregate throughput without search evidence hides contention.
+- The deferred 32-thread search target must not move into active benchmarks until `ark search`
+  reports measured `speedup_vs_single_thread`, CPU use, and RSS for `--threads 32`.
 - A failed target must print the observed metric, target metric, confidence bound, and benchmark id.
 
 ## Failure Modes

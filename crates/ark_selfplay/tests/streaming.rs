@@ -82,6 +82,30 @@ fn game_seed_does_not_depend_on_actor_count() -> Result<(), String> {
 }
 
 #[test]
+fn fixed_seed_selfplay_replay_stays_equal_with_reused_root_moves() -> Result<(), String> {
+    let dir = temp_dir("ark-selfplay-root-move-reuse")?;
+    let config = SelfPlayConfig {
+        games: 1,
+        search_depth: 2,
+        tactical_extension_depth: 1,
+        max_plies: 4,
+        actors: 1,
+        seed: 1234,
+        chunk_size: 1,
+        out_dir: dir.clone(),
+        model: None,
+        leaf_eval: LeafEvalMode::Terminal,
+    };
+
+    let (first_record, first_nodes) = play_one_game(0, &config)?;
+    let (second_record, second_nodes) = play_one_game(0, &config)?;
+
+    assert_eq!(first_record, second_record);
+    assert_eq!(first_nodes, second_nodes);
+    cleanup_dir(&dir)
+}
+
+#[test]
 fn model_ordered_selfplay_uses_trained_policy_for_first_move() -> Result<(), String> {
     let dir = temp_dir("ark-selfplay-model-order")?;
     let mut model = ForgeModel::default();
