@@ -43,7 +43,8 @@ The chunk header is the manifest for that sealed file. It contains:
 
 The body is a compact sequence of games. Each game stores the result byte, a `u16` ply count, and
 the packed `u16` moves. Readers must reject chunks when the sealed byte count, decoded body length,
-content hash, filename, validation summary, or rebuilt manifest do not match.
+content hash, validation summary, or rebuilt manifest do not match. Directory replay readers also
+reject chunks whose filenames do not match the manifest `chunk_id`.
 
 ## Manifest And Ordering
 
