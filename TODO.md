@@ -19,9 +19,10 @@ Prefer small PRs with one measurable outcome.
 
 The engine needs a rule core that contributors can trust before search or training work scales.
 
-- [ ] Tighten FEN validation in `ark_core::Position::from_fen`.
+- [x] Tighten FEN validation in `ark_core::Position::from_fen`.
   - Acceptance: reject rank digit `0`, multiple kings, pawns on first or eighth rank, invalid en
     passant squares, impossible castling rights, and positions where kings attack each other.
+  - Done: PR #7 added strict validation, rule tests, and `tests/fen_contract_guard.ps1`.
 - [ ] Expand the perft oracle suite.
   - Acceptance: fixture coverage includes startpos, Kiwipete, en passant pins, promotions, castling,
     discovered check, double check, pinned pieces, and stalemate-adjacent positions.
@@ -39,24 +40,30 @@ The engine needs a rule core that contributors can trust before search or traini
 
 Search should expose clear contracts, truthful traces, and stable protocol behavior.
 
-- [ ] Remove duplicate legal move generation from terminal and search paths.
+- [x] Remove duplicate legal move generation from terminal and search paths.
   - Acceptance: self-play and search share root legal moves where possible; trace output includes
     movegen call counts; fixed-seed replay hashes stay unchanged for representative runs.
-- [ ] Make `search --threads` real or reject it.
+  - Done: PR #11 added supplied-root search and movegen call counters.
+- [x] Make `search --threads` real or reject it.
   - Acceptance: `--threads 32` either uses deterministic parallel search with measured speedup and
     CPU metrics, or exits with a clear unsupported-option error.
-- [ ] Replace hand-built JSON output with typed writers.
+  - Done: PR #11 rejects unsupported search threads above 1.
+- [x] Replace hand-built JSON output with typed writers.
   - Acceptance: search, self-play, train, eval, and benchmark JSON use one tested serialization path;
     tests parse stdout as JSON.
-- [ ] Build a protocol-level UCI harness.
+  - Done: PR #11 added typed JSON reports and structural JSON tests.
+- [x] Build a protocol-level UCI harness.
   - Acceptance: tests cover `uci`, `isready`, `ucinewgame`, `position fen`, `position startpos moves`,
     malformed moves, `go depth`, `go nodes`, `go movetime`, `stop`, and `quit`.
-- [ ] Implement async UCI cancellation.
+  - Done: PR #11 added the UCI harness and protocol smoke tests.
+- [x] Implement async UCI cancellation.
   - Acceptance: `go infinite` starts search, `stop` returns a legal `bestmove` within a tested
     latency bound, and `quit` cannot hang during active search.
-- [ ] Add UCI clock management.
+  - Done: PR #11 added cancellable UCI search and stop/quit coverage.
+- [x] Add UCI clock management.
   - Acceptance: `go wtime btime winc binc movestogo` computes a bounded move budget and records it
     in trace output.
+  - Done: PR #11 added UCI budget selection and trace coverage.
 
 ## P2: Replay And Self-Play
 
@@ -85,9 +92,10 @@ Self-play data must be legal, deterministic, auditable, and honest about incompl
 
 Performance work should speed up the same engine behavior, not a reduced-quality benchmark path.
 
-- [ ] Close the benchmark contract gaps.
+- [x] Close the benchmark contract gaps.
   - Acceptance: documented gate commands run from the repo root, emit one JSON object, and fail when
     required target metrics are missing.
+  - Done: PR #11 added benchmark contract evaluation and `tests/perf_contract_guard.ps1`.
 - [ ] Implement `selfplay --duration`.
   - Acceptance: duration-mode self-play exits after the requested window, completes at least one game
     in smoke tests, and reports elapsed and requested duration fields.
