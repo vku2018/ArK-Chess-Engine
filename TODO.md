@@ -22,7 +22,8 @@ The engine needs a rule core that contributors can trust before search or traini
 - [x] Tighten FEN validation in `ark_core::Position::from_fen`.
   - Acceptance: reject rank digit `0`, multiple kings, pawns on first or eighth rank, invalid en
     passant squares, impossible castling rights, and positions where kings attack each other.
-  - Done: PR #7 added strict validation, rule tests, and `tests/fen_contract_guard.ps1`.
+  - Done: [PR #7](https://github.com/bitlical/ArK-Chess-Engine/pull/7) added strict validation,
+    rule tests, and `tests/fen_contract_guard.ps1`.
 - [ ] Expand the perft oracle suite.
   - Acceptance: fixture coverage includes startpos, Kiwipete, en passant pins, promotions, castling,
     discovered check, double check, pinned pieces, and stalemate-adjacent positions.
@@ -43,27 +44,33 @@ Search should expose clear contracts, truthful traces, and stable protocol behav
 - [x] Remove duplicate legal move generation from terminal and search paths.
   - Acceptance: self-play and search share root legal moves where possible; trace output includes
     movegen call counts; fixed-seed replay hashes stay unchanged for representative runs.
-  - Done: PR #11 added supplied-root search and movegen call counters.
+  - Done: [PR #11](https://github.com/bitlical/ArK-Chess-Engine/pull/11) added supplied-root
+    search and movegen call counters.
 - [x] Make `search --threads` real or reject it.
   - Acceptance: `--threads 32` either uses deterministic parallel search with measured speedup and
     CPU metrics, or exits with a clear unsupported-option error.
-  - Done: PR #11 rejects unsupported search threads above 1.
+  - Done: [PR #11](https://github.com/bitlical/ArK-Chess-Engine/pull/11) rejects unsupported
+    search threads above 1.
 - [x] Replace hand-built JSON output with typed writers.
   - Acceptance: search, self-play, train, eval, and benchmark JSON use one tested serialization path;
     tests parse stdout as JSON.
-  - Done: PR #11 added typed JSON reports and structural JSON tests.
+  - Done: [PR #11](https://github.com/bitlical/ArK-Chess-Engine/pull/11) added typed JSON reports
+    and structural JSON tests.
 - [x] Build a protocol-level UCI harness.
   - Acceptance: tests cover `uci`, `isready`, `ucinewgame`, `position fen`, `position startpos moves`,
     malformed moves, `go depth`, `go nodes`, `go movetime`, `stop`, and `quit`.
-  - Done: PR #11 added the UCI harness and protocol smoke tests.
+  - Done: [PR #11](https://github.com/bitlical/ArK-Chess-Engine/pull/11) added the UCI harness and
+    protocol smoke tests.
 - [x] Implement async UCI cancellation.
   - Acceptance: `go infinite` starts search, `stop` returns a legal `bestmove` within a tested
     latency bound, and `quit` cannot hang during active search.
-  - Done: PR #11 added cancellable UCI search and stop/quit coverage.
+  - Done: [PR #11](https://github.com/bitlical/ArK-Chess-Engine/pull/11) added cancellable UCI
+    search and stop/quit coverage.
 - [x] Add UCI clock management.
   - Acceptance: `go wtime btime winc binc movestogo` computes a bounded move budget and records it
     in trace output.
-  - Done: PR #11 added UCI budget selection and trace coverage.
+  - Done: [PR #11](https://github.com/bitlical/ArK-Chess-Engine/pull/11) added UCI budget selection
+    and trace coverage.
 
 ## P2: Replay And Self-Play
 
@@ -95,7 +102,8 @@ Performance work should speed up the same engine behavior, not a reduced-quality
 - [x] Close the benchmark contract gaps.
   - Acceptance: documented gate commands run from the repo root, emit one JSON object, and fail when
     required target metrics are missing.
-  - Done: PR #11 added benchmark contract evaluation and `tests/perf_contract_guard.ps1`.
+  - Done: [PR #11](https://github.com/bitlical/ArK-Chess-Engine/pull/11) added benchmark contract
+    evaluation and `tests/perf_contract_guard.ps1`.
 - [ ] Implement `selfplay --duration`.
   - Acceptance: duration-mode self-play exits after the requested window, completes at least one game
     in smoke tests, and reports elapsed and requested duration fields.
