@@ -1,15 +1,47 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
-$CargoHome = Join-Path $Root ".tools\cargo-home"
-$RustupHome = Join-Path $Root ".tools\rustup-home"
-$CargoBin = Join-Path $CargoHome "bin"
-$Cargo = Join-Path $CargoBin "cargo.exe"
-$RustLld = Join-Path $RustupHome "toolchains\1.79.0-x86_64-pc-windows-gnu\lib\rustlib\x86_64-pc-windows-gnu\bin\rust-lld.exe"
 
-$env:CARGO_HOME = $CargoHome
-$env:RUSTUP_HOME = $RustupHome
-$env:PATH = "$CargoBin;$env:PATH"
-$env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = $RustLld
+function Resolve-Cargo {
+  if ($env:ARK_CARGO) {
+    return [pscustomobject]@{
+      Command = $env:ARK_CARGO
+      PrefixArgs = @()
+    }
+  }
+
+  $CargoHome = Join-Path $Root ".tools\cargo-home"
+  $RustupHome = Join-Path $Root ".tools\rustup-home"
+  $CargoBin = Join-Path $CargoHome "bin"
+  $LocalCargo = Join-Path $CargoBin "cargo.exe"
+  $Toolchain = "1.79.0-x86_64-pc-windows-gnu"
+  $HostTriple = "x86_64-pc-windows-gnu"
+  $RustLld = Join-Path $RustupHome "toolchains\$Toolchain\lib\rustlib\$HostTriple\bin\rust-lld.exe"
+
+  if (Test-Path -LiteralPath $LocalCargo) {
+    $env:CARGO_HOME = $CargoHome
+    $env:RUSTUP_HOME = $RustupHome
+    $env:PATH = "$CargoBin;$env:PATH"
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = $RustLld
+    return [pscustomobject]@{
+      Command = $LocalCargo
+      PrefixArgs = @("+$Toolchain")
+    }
+  }
+
+  $GlobalCargo = Get-Command cargo -ErrorAction SilentlyContinue
+  if ($null -ne $GlobalCargo) {
+    return [pscustomobject]@{
+      Command = $GlobalCargo.Source
+      PrefixArgs = @()
+    }
+  }
+
+  throw "cargo not found. Install Rust or run scripts\bootstrap-rust.ps1."
+}
+
+$Cargo = Resolve-Cargo
+
+Set-Location $Root
 
 function Assert-True($Condition, [string]$Message) {
   if (-not $Condition) {
@@ -18,7 +50,7 @@ function Assert-True($Condition, [string]$Message) {
 }
 
 function Invoke-ArkPerft([string]$Fen) {
-  $Args = @(
+  $Args = @($Cargo.PrefixArgs) + @(
     "run",
     "-p",
     "ark_cli",
@@ -33,7 +65,7 @@ function Invoke-ArkPerft([string]$Fen) {
   $PreviousErrorActionPreference = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
-    $Output = & $Cargo @Args 2>&1
+    $Output = & $Cargo.Command @Args 2>&1
     return [pscustomobject]@{
       ExitCode = $LASTEXITCODE
       Output = ($Output | Out-String)
@@ -126,3 +158,4 @@ foreach ($Case in $Invalid) {
 }
 
 Write-Output "fen_contract_guard: accepted=$Accepted rejected=$Rejected"
+exit 0

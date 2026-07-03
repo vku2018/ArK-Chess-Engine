@@ -37,24 +37,40 @@ training data formats, command-line tooling, testing, and documentation.
 
 ## Quick Start
 
-Run from the repository root in PowerShell:
+Install Rust with `rustup`, then run from the repository root:
+
+```sh
+cargo build --release -p ark_cli
+cargo test --workspace
+```
+
+For a full local check, use the platform script:
+
+```sh
+./scripts/check.sh --release
+```
+
+```powershell
+.\scripts\check.ps1 -Release
+```
+
+Windows contributors who do not want a global Rust install can still use the repository-local helper:
 
 ```powershell
 .\scripts\bootstrap-rust.ps1
 .\scripts\cargo-local.ps1 build --release -p ark_cli
 ```
 
-`bootstrap-rust.ps1` installs the pinned Rust toolchain under `.tools` for this repository. It does
-not require a global Rust install.
+That helper installs Rust under `.tools` for this repository only.
 
 ## CLI Examples
 
-```powershell
-.\scripts\cargo-local.ps1 run -p ark_cli -- perft --fen "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" --depth 4 --json
-.\scripts\cargo-local.ps1 run -p ark_cli -- search --fen "7k/6Q1/5K2/8/8/8/8/8 w - - 0 1" --depth 1 --json
-.\scripts\cargo-local.ps1 run -p ark_cli -- selfplay --config configs/selfplay/baseline.toml --json
-.\scripts\cargo-local.ps1 run -p ark_cli -- train --config configs/train/v4.toml --json
-.\scripts\cargo-local.ps1 run -p ark_cli -- uci
+```sh
+cargo run --release -p ark_cli -- perft --fen "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" --depth 4 --json
+cargo run --release -p ark_cli -- search --fen "7k/6Q1/5K2/8/8/8/8/8 w - - 0 1" --depth 1 --json
+cargo run --release -p ark_cli -- selfplay --config configs/selfplay/baseline.toml --json
+cargo run --release -p ark_cli -- train --config configs/train/v4.toml --json
+cargo run --release -p ark_cli -- uci
 ```
 
 Generated runs, replay chunks, model checkpoints, logs, and reports are ignored by Git. Do not
@@ -71,7 +87,7 @@ crates/
   ark_cli       CLI, UCI, train, eval, self-play, and benchmark entry points
 configs/        Example self-play and training configs
 docs/           Architecture and performance notes
-tests/          PowerShell guard tests for repo health
+tests/          Repository guard tests for engine and project contracts
 ```
 
 Older engine generations are not part of the active tree. V4 code should stand on the Rust crates
@@ -79,17 +95,27 @@ listed above.
 
 ## Validation
 
-```powershell
-.\scripts\cargo-local.ps1 test
-.\scripts\cargo-local.ps1 clippy --all-targets '--' '-D' 'warnings'
-.\tests\active_tree_guard.ps1
-.\tests\perf_contract_guard.ps1
-.\tests\dependency_guard.ps1
-.\tests\codex_review_gate.ps1
+```sh
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo build --release -p ark_cli --locked
 ```
 
-The gate checks cover Rust tests, Clippy, active-tree hygiene, performance-contract docs, dependency
-boundaries, and the required Codex review signal.
+The CI matrix runs these checks on Linux, macOS, and Windows. The repository guards also verify
+active-tree hygiene, FEN CLI behavior, performance-contract docs, and dependency boundaries.
+
+## Releases
+
+Tagged versions build precompiled `ark` binaries for:
+
+- `x86_64-unknown-linux-gnu`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+- `x86_64-pc-windows-msvc`
+
+Maintainers can publish a release by pushing a `v*` tag. The release workflow packages each binary
+with the README and license, then attaches the archives to the GitHub Release.
 
 ## Good First Contributions
 
@@ -102,7 +128,7 @@ Strong starter issues usually touch one narrow path and leave a clear measuremen
 - Improve docs where a command, invariant, or file format is unclear.
 
 Before opening a PR, read [CONTRIBUTING.md](CONTRIBUTING.md). Every PR should include the validation
-commands that were run and request a Codex connector review on the latest commit.
+commands that were run.
 
 ## Project Direction
 

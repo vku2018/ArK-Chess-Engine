@@ -25,19 +25,18 @@ Open a pull request for every change. Include:
 
 Use direct commit messages such as `Tighten replay validation` or `Add perft regression case`.
 
-Every PR must have a Codex connector review on the latest head commit before merge. If you push
-again after a review, request a fresh pass with `@codex review`.
-
 Before opening a PR, run:
 
-```powershell
-.\scripts\cargo-local.ps1 test
-.\scripts\cargo-local.ps1 clippy --all-targets '--' '-D' 'warnings'
-.\tests\active_tree_guard.ps1
-.\tests\perf_contract_guard.ps1
-.\tests\dependency_guard.ps1
-.\tests\codex_review_gate.ps1
+```sh
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo build --release -p ark_cli --locked
 ```
+
+`scripts/check.sh --release` and `scripts/check.ps1 -Release` run the full local gate, including
+repository guard scripts. Maintainers may request additional automated review before merging, but
+contributors do not need private tooling to open a useful pull request.
 
 ## Rust Standards
 

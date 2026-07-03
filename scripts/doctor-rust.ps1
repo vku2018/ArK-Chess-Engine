@@ -4,7 +4,9 @@ $CargoHome = Join-Path $Root ".tools\cargo-home"
 $RustupHome = Join-Path $Root ".tools\rustup-home"
 $CargoBin = Join-Path $CargoHome "bin"
 $Cargo = Join-Path $CargoBin "cargo.exe"
-$RustLld = Join-Path $RustupHome "toolchains\1.79.0-x86_64-pc-windows-gnu\lib\rustlib\x86_64-pc-windows-gnu\bin\rust-lld.exe"
+$Toolchain = "1.79.0-x86_64-pc-windows-gnu"
+$HostTriple = "x86_64-pc-windows-gnu"
+$RustLld = Join-Path $RustupHome "toolchains\$Toolchain\lib\rustlib\$HostTriple\bin\rust-lld.exe"
 
 Set-Location $Root
 $env:CARGO_HOME = $CargoHome
@@ -18,7 +20,7 @@ Write-Host "Cargo home: $CargoHome"
 Write-Host "Rustup home: $RustupHome"
 
 if (Test-Path $Cargo) {
-  & $Cargo --version
+  & $Cargo "+$Toolchain" --version
 } else {
   Write-Host "cargo: missing. Run scripts\\bootstrap-rust.ps1 after approval."
 }

@@ -15,7 +15,7 @@ body:
     attributes:
       label: Reproduction
       description: Provide the command, FEN, config, or test case that reproduces the issue.
-      placeholder: ".\\scripts\\cargo-local.ps1 test"
+      placeholder: "cargo test --workspace --locked"
     validations:
       required: true
   - type: textarea

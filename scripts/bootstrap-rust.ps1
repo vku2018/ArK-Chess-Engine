@@ -10,7 +10,8 @@ $CargoHome = Join-Path $Tools "cargo-home"
 $CargoBin = Join-Path $CargoHome "bin"
 $Cargo = Join-Path $CargoBin "cargo.exe"
 $Rustup = Join-Path $CargoBin "rustup.exe"
-$RustLld = Join-Path $RustupHome "toolchains\$Toolchain\lib\rustlib\x86_64-pc-windows-gnu\bin\rust-lld.exe"
+$HostTriple = "x86_64-pc-windows-gnu"
+$RustLld = Join-Path $RustupHome "toolchains\$Toolchain\lib\rustlib\$HostTriple\bin\rust-lld.exe"
 
 Set-Location $Root
 New-Item -ItemType Directory -Force $Tools, $RustupHome, $CargoHome | Out-Null
@@ -40,8 +41,8 @@ if (-not (Test-Path -LiteralPath $RustLld)) {
   throw "rust-lld missing from local toolchain: $RustLld"
 }
 
-& $Cargo --version
-& $Cargo test
+& $Cargo "+$Toolchain" --version
+& $Cargo "+$Toolchain" test
 if ($LASTEXITCODE -ne 0) {
   throw "cargo test failed"
 }
